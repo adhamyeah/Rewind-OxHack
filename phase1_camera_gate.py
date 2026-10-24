@@ -19,7 +19,9 @@ ITEMS = ["keys", "glasses", "wallet", "phone", "remote control", "mug", "headpho
 CONFIDENCE = 0.15
 
 # --- YOLO knobs: the real speed levers (tune these first) ---
-MODEL = "yolov8n-worldv2.pt"   # nano is ~3x faster than yolov8s-worldv2.pt; switch back if accuracy drops
+MODEL = "yolov8s-worldv2.pt"   # smallest YOLO-World model: no nano variant exists (only s/m/l/x)
+# The weights are NOT auto-downloaded. If yolov8s-worldv2.pt is missing, fetch it once:
+#   curl -L -o yolov8s-worldv2.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8s-worldv2.pt
 IMGSZ = 480                    # default is 640; 480 is fine for a table and ~2x faster
 DEVICE = "cpu"                 # "0" if you have an NVIDIA GPU
 
