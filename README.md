@@ -44,16 +44,23 @@ curl -L -o yolov8s-worldv2.pt https://github.com/ultralytics/assets/releases/dow
 
 ## Run
 
+Point the camera down at the table and tape it in place, then:
+
 ```bash
-python phase1_camera_gate.py    # Q to quit
+python zone_editor.py           # once: click corners, N to name a zone, S to save, Q to quit
+python detector.py              # live window with boxes, Q to quit (--source 1 for another camera)
 ```
 
-Web page (second terminal), then open http://localhost:8000 in Chrome:
+Put an item down, take your hand away, and within a second the terminal prints
+`keys placed on the kitchen table` and a row lands in `rewind.db`.
+
+Web page (second terminal, at the same time as the detector), then open http://localhost:8000 in Chrome:
 
 ```bash
-python seed_fake.py             # optional: fake items so the page has something to show
 uvicorn server:app --reload
 ```
+
+No camera handy? `python seed_fake.py` fills the page with fake items.
 
 Tests: `pip install -r requirements-dev.txt`, then `python -m pytest`.
 
@@ -67,7 +74,7 @@ the venv automatically).
 git pull                          # grab the other person's changes first
 # ...work...
 git status                        # always check what's staged before committing
-# the venv + __pycache__ + .DS_Store should be ignored here; the .pt weights should NOT be
+# the venv, __pycache__, rewind.db and snapshots/ should be ignored here; the .pt weights should NOT be
 # (the weights are committed on purpose so both machines skip the 26 MB download)
 git add -A                        # stage everything, dotfiles included
 # never use `git add *` — the shell glob skips dotfiles like .gitignore

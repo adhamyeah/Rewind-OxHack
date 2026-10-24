@@ -6,7 +6,10 @@ Built for people living with dementia. Follow `TICKETS.md` for what's left.
 
 ## Layout
 
-- `phase1_camera_gate.py`: change-gated YOLO-World camera loop (becomes `detector.py`, REW-06)
+- `detector.py`: camera loop; YOLO-World runs once the scene changes then goes still
+- `memory.py`: placed/gone rules, snapshots (people blurred), writes events via `db.py`
+- `zones.py` / `zone_editor.py`: named areas of the view, saved in `zones.json` (per camera, not committed)
+- `camera.py`: opens the webcam (DirectShow + MJPG on Windows)
 - `db.py`: SQLite helpers; the detector writes, the server only reads
 - `server.py`: FastAPI `/items`, `/where`, `/snapshots/*`, serves `static/`
 - `static/`: the UI (`index.html`, `app.js`, `style.css`)
@@ -32,7 +35,8 @@ Built for people living with dementia. Follow `TICKETS.md` for what's left.
 ```bash
 python seed_fake.py                 # optional: fake data
 uvicorn server:app --reload         # http://localhost:8000 in Chrome
-python phase1_camera_gate.py        # camera, in a second terminal
+python zone_editor.py               # once per camera position
+python detector.py                  # camera, in a second terminal
 python -m pytest                    # tests (pip install -r requirements-dev.txt)
 ```
 
