@@ -48,6 +48,15 @@ curl -L -o yolov8s-worldv2.pt https://github.com/ultralytics/assets/releases/dow
 python phase1_camera_gate.py    # Q to quit
 ```
 
+Web page (second terminal), then open http://localhost:8000 in Chrome:
+
+```bash
+python seed_fake.py             # optional: fake items so the page has something to show
+uvicorn server:app --reload
+```
+
+Tests: `pip install -r requirements-dev.txt`, then `python -m pytest`.
+
 VSCode: Command Palette -> "Python: Select Interpreter" -> pick the `.venv`
 interpreter at the repo path, then run from the VSCode terminal (it activates
 the venv automatically).

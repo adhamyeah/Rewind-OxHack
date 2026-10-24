@@ -41,7 +41,7 @@ if not cam.isOpened():
 
 visible: set[str] = set()
 baseline = None                 # greyscale gate image of the last inspected scene
-annotated = None
+last_result = None             # last YOLO result; its boxes are redrawn on every live frame
 last_check = 0.0
 last_detect_ms = 0.0
 fps = 0.0
@@ -81,13 +81,14 @@ while True:
             for item in sorted(visible - seen):
                 print(f"{stamp}  {item} left view")
             visible = seen
-            annotated = result.plot()
+            last_result = result
             baseline = gate         # snap: this frame is the new "still" scene
         else:
             # gentle drift blend so slow lighting changes don't retrigger
             baseline = cv2.addWeighted(gate, DRIFT, baseline, 1 - DRIFT, 0)
 
-    overlay = annotated if annotated is not None else frame.copy()
+    # draw the last boxes on the live frame, so video keeps moving between detections
+    overlay = last_result.plot(img=frame.copy()) if last_result is not None else frame.copy()
     status = f"in {fps:.0f} fps | diff {diff:.1f}/{DIFF_THRESHOLD:.1f}"
     if last_detect_ms:
         status += f" | yolo {last_detect_ms:.0f} ms"
