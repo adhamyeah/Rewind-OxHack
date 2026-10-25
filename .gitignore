@@ -4,3 +4,11 @@ __pycache__/
 .DS_Store
 # CLIP text encoder, downloaded automatically on first run (338 MB, over GitHub's 100 MB limit)
 weights/
+# Gemini API key - NEVER commit this
+.env
+# made while Rewind runs
+snapshots/
+rewind.db
+rewind.db-wal
+rewind.db-shm
+clips/

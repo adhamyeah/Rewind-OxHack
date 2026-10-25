@@ -37,20 +37,56 @@ If `Activate.ps1` is blocked by PowerShell's execution policy, run
 YOLO-World does **not** auto-download its weights. Fetch once:
 
 ```bash
-curl -L -o yolov8s-worldv2.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8s-worldv2.pt
+curl -L -o yolov8m-worldv2.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8m-worldv2.pt
 ```
 
-(Windows PowerShell: use `curl.exe`, not `curl`, or `Invoke-WebRequest -Uri <url> -OutFile yolov8s-worldv2.pt`.)
+(Windows PowerShell: use `curl.exe`, not `curl`, or `Invoke-WebRequest -Uri <url> -OutFile yolov8m-worldv2.pt`.)
 
 ## Run
 
-```bash
-python phase1_camera_gate.py    # Q to quit
+**Once: API keys.** Create a file called `.env` in the repo root (it's git-ignored; never commit it):
+
+```
+GEMINI_API_KEY=your-gemini-key
+ELEVENLABS_API_KEY=your-elevenlabs-key
+ELEVENLABS_VOICE_ID=optional-voice-id
 ```
 
-VSCode: Command Palette -> "Python: Select Interpreter" -> pick the `.venv`
-interpreter at the repo path, then run from the VSCode terminal (it activates
-the venv automatically).
+The ElevenLabs key needs **Text to Speech** and **Speech to Text** access. Then check each part:
+
+```bash
+python describe.py              # Gemini: one tiny test call, prints OK or what's wrong
+python speak.py                 # ElevenLabs says a test sentence out loud
+python listen.py                # say "where are my keys?" - prints what it heard
+```
+
+**Once per camera position: zones.** Tape the camera down, then draw the areas
+items get left on (name them like "on the kitchen table"):
+
+```bash
+python zone_editor.py           # click corners, Enter to name, q to save
+```
+
+**Every time:**
+
+```bash
+python phase1_camera_gate.py    # q to quit;  --no-gemini / --no-voice / --no-listen / --quiet / --wake
+```
+
+Just ask out loud: "where are my glasses?" - or press **1-8** in the video window.
+Say "show me where my glasses were" (or press **r** after asking) for the **rewind timeline**:
+the item's last places plus a replay of the moment it was put down. `python timeline.py glasses`
+opens it on its own. In a noisy room, `--wake` makes Rewind answer only questions that start with "Rewind".
+
+| File | What it does |
+| --- | --- |
+| `phase1_camera_gate.py` | Camera + detection (YOLO-World items, yolo11n people). Starts everything. |
+| `zones.py`, `zone_editor.py` | Named areas of the camera view, and the tool to draw them |
+| `memory.py` | Put down / picked up / in your hand, last-seen times, snapshots and clips, in `rewind.db` |
+| `describe.py` | Gemini: checks each put-down, scans the scene when it settles, describes spots, understands odd questions |
+| `listen.py` | Spoken questions: microphone + ElevenLabs speech-to-text |
+| `speak.py` | Spoken answers: ElevenLabs voice |
+| `timeline.py` | The rewind timeline: history + replay |
 
 ## Git workflow (use this loop every time)
 

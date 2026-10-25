@@ -1,2 +1,5 @@
 opencv-python
 ultralytics
+google-genai
+elevenlabs
+sounddevice
