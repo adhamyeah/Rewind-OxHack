@@ -126,11 +126,22 @@ class LiveDetector:
                 dets.append((int(x1), int(y1), int(x2), int(y2), r.names[int(k)], float(c)))
         self.item_ms = (time.perf_counter() - start) * 1000
         if self.person_model is not None:
-            r = self.person_model.predict(frame, conf=config.PERSON_CONFIDENCE, imgsz=config.IMGSZ,
-                                          classes=[0], device=self.device, verbose=False)[0]
-            for (x1, y1, x2, y2), c in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist()):
-                if (x2 - x1) * (y2 - y1) >= config.MIN_PERSON_AREA * w * h:  # skip the background crowd
-                    dets.append((int(x1), int(y1), int(x2), int(y2), "person", float(c)))
+            # open vocabulary: the same model also reports its everyday objects, so something is
+            # always seen locally, even before Gemini's first answer or when its quota runs out
+            coco = self.vocab is not None and config.USE_COCO_OBJECTS
+            r = self.person_model.predict(frame, conf=min(config.PERSON_CONFIDENCE, config.COCO_CONFIDENCE),
+                                          imgsz=config.IMGSZ, classes=None if coco else [0],
+                                          device=self.device, verbose=False)[0]
+            seen = {d[4] for d in dets}
+            for (x1, y1, x2, y2), c, k in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist()):
+                box = (int(x1), int(y1), int(x2), int(y2))
+                if int(k) == 0:
+                    if c >= config.PERSON_CONFIDENCE and (x2 - x1) * (y2 - y1) >= config.MIN_PERSON_AREA * w * h:
+                        dets.append((*box, "person", float(c)))   # skip the background crowd
+                    continue
+                name = self.vocab.canonical(r.names[int(k)]) if c >= config.COCO_CONFIDENCE else None
+                if name and name not in seen:                     # "cell phone" -> phone, "cup" -> mug
+                    dets.append((*box, name, float(c)))
         return dets
 
     def _loop(self):

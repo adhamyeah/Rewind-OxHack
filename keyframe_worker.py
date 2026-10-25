@@ -13,7 +13,7 @@ import time
 import cv2
 
 import config
-from gemini_detector import gemini_detect
+from gemini_detector import gemini_detect, is_quota_error
 
 
 class KeyframeWorker:
@@ -51,8 +51,8 @@ class KeyframeWorker:
                 self.status = "gemini"
                 return self.detect_fn(frame)
             except Exception as e:
-                quota = "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e)
-                reason = "quota used up" if quota else str(e)[:100]
+                quota = is_quota_error(e)
+                reason = "quota used up on every model" if quota else str(e)[:100]
                 # a used-up quota won't come back soon; a network blip or busy server usually
                 # does, and while Gemini is off nothing new can be learned (YOLO only knows
                 # names Gemini already predicted), so retry those quickly

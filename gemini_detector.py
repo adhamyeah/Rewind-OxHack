@@ -16,6 +16,33 @@ from vocab import VOCAB
 
 _client = None
 _last_call = 0.0
+_used_up = set()   # models whose quota ran out this session: skipped until Rewind restarts
+
+
+def is_quota_error(e):
+    return "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e)
+
+
+def _generate(client, **kw):
+    """generate_content on the first model that still has quota.
+
+    Each Gemini model has its own free daily limit, so when one runs out we move on to the
+    next in config.GEMINI_MODELS instead of losing detection. Raises the last quota error
+    once every model is used up (the worker then falls back to YOLO).
+    """
+    last = None
+    for model in config.GEMINI_MODELS:
+        if model in _used_up:
+            continue
+        try:
+            return client.models.generate_content(model=model, **kw)
+        except Exception as e:
+            if not is_quota_error(e):
+                raise
+            _used_up.add(model)
+            print(f"[gemini] {model}: quota used up, switching model")
+            last = e
+    raise last or RuntimeError("429 RESOURCE_EXHAUSTED: every Gemini model's quota is used up")
 
 
 def normalise_label(text):
@@ -111,8 +138,8 @@ def gemini_detect(frame, client=None, vocab=None):
     if not ok:
         raise RuntimeError("could not encode frame")
     prompt = config.GEMINI_OPEN_PROMPT if vocab else config.GEMINI_PROMPT
-    reply = client.models.generate_content(
-        model=config.GEMINI_MODEL,
+    reply = _generate(
+        client,
         contents=[_image_part(jpg.tobytes()), prompt],
         config={"response_mime_type": "application/json", "response_schema": config.GEMINI_OPEN_SCHEMA}
         if vocab else {"response_mime_type": "application/json"},
@@ -144,7 +171,7 @@ def gemini_pick_label(question, client=None, vocab=None):
         prompt = (f"Which one of {config.ITEMS} is this question about? "
                   f"Reply with just the item name, or NONE.\nQuestion: {question}")
     try:
-        reply = client.models.generate_content(model=config.GEMINI_MODEL, contents=prompt)
+        reply = _generate(client, contents=prompt)
         text = (reply.text or "").strip()
         if vocab is None:
             return normalise_label(text)

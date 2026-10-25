@@ -114,3 +114,47 @@ def test_answer_for_a_learned_thing_and_an_unseen_one(v):
     a = Answerer(m, UIState(), speak=spoken.append, pick_label=lambda q: "charger", vocab=v)
     assert "stapler" in a.ask("where is my stapler?")
     assert a.ask("where's my charger") == "I haven't seen the charger yet."
+
+
+def test_quota_on_one_model_switches_to_the_next(monkeypatch):
+    monkeypatch.setattr(gd.config, "GEMINI_MODELS", ["model-a", "model-b"])
+    monkeypatch.setattr(gd, "_used_up", set())
+    tried = []
+
+    class Models:
+        def generate_content(self, model, **kw):
+            tried.append(model)
+            if model == "model-a":
+                raise RuntimeError("429 RESOURCE_EXHAUSTED")
+            return SimpleNamespace(text="ok")
+
+    client = SimpleNamespace(models=Models())
+    assert gd._generate(client, contents="x").text == "ok"
+    assert gd._generate(client, contents="x").text == "ok"
+    assert tried == ["model-a", "model-b", "model-b"]   # a used-up model isn't tried again
+
+
+def test_all_models_used_up_raises_a_quota_error(monkeypatch):
+    monkeypatch.setattr(gd.config, "GEMINI_MODELS", ["model-a"])
+    monkeypatch.setattr(gd, "_used_up", set())
+
+    class Models:
+        def generate_content(self, model, **kw):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    with pytest.raises(RuntimeError) as err:
+        gd._generate(SimpleNamespace(models=Models()), contents="x")
+    assert gd.is_quota_error(err.value)
+
+
+def test_other_errors_are_not_treated_as_quota(monkeypatch):
+    monkeypatch.setattr(gd.config, "GEMINI_MODELS", ["model-a", "model-b"])
+    monkeypatch.setattr(gd, "_used_up", set())
+
+    class Models:
+        def generate_content(self, model, **kw):
+            raise RuntimeError("503 server busy")
+
+    with pytest.raises(RuntimeError, match="503"):
+        gd._generate(SimpleNamespace(models=Models()), contents="x")
+    assert gd._used_up == set()                          # a busy server doesn't burn a model

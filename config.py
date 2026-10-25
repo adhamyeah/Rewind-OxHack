@@ -15,6 +15,9 @@ except ImportError:
 # --- secrets / services (all optional: each one fails gracefully) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+# tried in order: each model has its own free daily quota, so when one runs out Rewind moves on
+GEMINI_MODELS = list(dict.fromkeys([GEMINI_MODEL, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
+                                    "gemini-flash-lite-latest"]))
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
 TIGER_DATABASE_URL = os.getenv("TIGER_DATABASE_URL", "")
@@ -55,6 +58,10 @@ CONFIDENCE = 0.15
 USE_PERSON_MODEL = True
 PERSON_MODEL = "yolo11n.pt"
 PERSON_CONFIDENCE = 0.5
+# the person model (yolo11n) also knows 79 everyday objects (cell phone, cup, laptop, bottle...);
+# its objects are always shown and remembered, so Rewind still sees things when Gemini can't
+USE_COCO_OBJECTS = True
+COCO_CONFIDENCE = 0.4
 MIN_PERSON_AREA = 0.03
 
 # --- camera ---
@@ -73,7 +80,8 @@ PASSES_PER_SECOND = 5
 MOTION_PIXEL_DIFF = 25      # a pixel counts as moving if it changed by more than this (0-255)
 MOTION_FRACTION = 0.01      # scene is "moving" if more than 1% of pixels moved
 SETTLE_SECONDS = 1.0        # scene must stay still this long before a keyframe fires
-MAX_KEYFRAME_WAIT = 5.0     # ...but if it keeps changing (a person in view, a thing held up), fire anyway after this
+MAX_KEYFRAME_WAIT = 10.0    # ...but if it keeps changing (a person in view, a thing held up), fire anyway after this
+                            # (every 5 s used up a free daily Gemini quota in about an hour; SPACE looks at once)
 
 # --- memory ---
 MISSES_TO_LEAVE = 2         # keyframes an item must be missing from before it is "gone"
