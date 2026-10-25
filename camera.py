@@ -9,6 +9,17 @@ import cv2
 import config
 
 
+def available_cameras(max_index=4):
+    """Camera indexes OpenCV can open right now (only used to write a helpful error message)."""
+    found = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            found.append(i)
+        cap.release()
+    return found
+
+
 class Camera:
     def __init__(self, source, width=config.CAMERA_W, height=config.CAMERA_H):
         self.is_file = not str(source).isdigit()
@@ -27,7 +38,15 @@ class Camera:
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # don't queue old frames
 
         if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open camera or video: {source!r}. Try --source 1")
+            self.cap.release()
+            if self.is_file:
+                raise RuntimeError(f"Could not open the video file {source!r}. Check the path.")
+            found = available_cameras()
+            raise RuntimeError(
+                f"Could not open camera {source!r}. "
+                + (f"Cameras that can be opened right now: {found}. Try --source {found[0]}."
+                   if found else "No camera can be opened right now.")
+                + " Phone cameras need the phone unlocked and nearby; also check camera permission for your terminal.")
 
         self.file_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
         self.lock = threading.Lock()

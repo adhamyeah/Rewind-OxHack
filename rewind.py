@@ -58,7 +58,12 @@ def main():
     store = Store()
     worker = KeyframeWorker(memory, store, use_gemini=use_gemini,
                             on_pending=lambda: det.force_keyframe())  # det is created just below
-    cam = Camera(args.source)
+    try:
+        cam = Camera(args.source)
+    except RuntimeError as e:
+        print(f"[rewind] {e}")
+        worker.stop()
+        return
     det = LiveDetector(cam, pick_device(), on_keyframe=worker.submit)
     cam.start()
     det.start()
