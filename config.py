@@ -109,7 +109,8 @@ CHECK_MOVE_FRACTION = 0.08    # a verdict holds until the box moves more than 8%
 GEMINI_THINKING = os.getenv("GEMINI_THINKING", "low")  # Gemini 3 'thinking' level for the scan; default thinking took up to 16 s, 'low' ~2 s. "" = model default
 GEMINI_MIN_GAP = 1.0        # seconds between live Gemini calls (batch scripts add their own ~4 s)
 ASK_WAIT_SECONDS = 8.0      # a question waits up to this long for memory to catch up with the table
-GEMINI_COOLDOWN = 600.0     # after a Gemini failure (e.g. quota), skip Gemini this long and use YOLO
+GEMINI_COOLDOWN = 600.0     # after Gemini says the QUOTA is used up, skip Gemini this long and use YOLO
+GEMINI_RETRY_SECONDS = 15.0 # after any other failure (503 overloaded, network blip), try Gemini again after this long
 
 # --- files ---
 KEYFRAME_DIR = "keyframes"

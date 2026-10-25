@@ -137,10 +137,12 @@ class KeyframeWorker:
         return extras
 
     def _cool_down(self, what, e, attr):
-        reason = "quota used up" if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e) else str(e)[:100]
-        setattr(self, attr, time.time() + config.GEMINI_COOLDOWN)
+        quota = "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e)
+        pause = config.GEMINI_COOLDOWN if quota else config.GEMINI_RETRY_SECONDS  # an overloaded server recovers fast
+        reason = "quota used up" if quota else str(e)[:80].replace("\n", " ")
+        setattr(self, attr, time.time() + pause)
         fallback = "using YOLO boxes" if attr == "gemini_off_until" else "skipping checks"
-        print(f"[worker] {what} failed ({reason}); {fallback} for the next {config.GEMINI_COOLDOWN / 60:.0f} min")
+        print(f"[worker] {what} failed ({reason}); {fallback} for the next {pause:.0f} s")
 
     def _loop(self):
         while True:

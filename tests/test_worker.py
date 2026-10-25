@@ -242,3 +242,13 @@ def test_only_the_head_is_blurred_before_gemini(monkeypatch, tmp_path):
     assert not np.array_equal(seen[0][100:head_end, 100:300], frame[100:head_end, 100:300])
     assert np.array_equal(seen[0][head_end:, :], frame[head_end:, :])  # hands and table in front stay visible
     w.stop()
+
+
+def test_overloaded_gemini_is_retried_soon_but_a_used_up_quota_is_not(monkeypatch, tmp_path):
+    mem, w = make_worker(monkeypatch, tmp_path, lambda f: [])
+    w._cool_down("Gemini", RuntimeError("503 UNAVAILABLE high demand"), "gemini_off_until")
+    short = w.gemini_off_until - time.time()
+    w._cool_down("Gemini", RuntimeError("429 RESOURCE_EXHAUSTED"), "gemini_off_until")
+    long = w.gemini_off_until - time.time()
+    assert short <= kw.config.GEMINI_RETRY_SECONDS + 1 and long > 300
+    w.stop()
