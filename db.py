@@ -4,6 +4,7 @@ One row each time an item is placed somewhere or goes from view.
 """
 
 import sqlite3
+import time
 
 DB_PATH = "rewind.db"
 
@@ -50,3 +51,29 @@ def latest_rows(db):
                                       WHERE item = e.item AND event = 'placed')
         WHERE e.id IN (SELECT MAX(id) FROM events GROUP BY item)
         ORDER BY e.at DESC""").fetchall()
+
+
+def ago(t, now=None):
+    mins = int(((now or time.time()) - t) // 60)
+    if mins < 1:
+        return "just now"
+    if mins < 60:
+        return f"{mins} minute{'s' * (mins != 1)} ago"
+    hours = mins // 60
+    return f"about {hours} hour{'s' * (hours != 1)} ago"
+
+
+PLURALS = {"keys", "glasses", "sunglasses", "scissors", "headphones", "earphones", "skis"}
+
+
+def answer(row):
+    """The spoken sentence for an item's latest event (used by the page and by main.py's voice)."""
+    item, when = row["item"], ago(row["at"])
+    where = row["place"] or row["zone"]          # Gemini's description when we have it
+    many = item in PLURALS
+    are, them = ("are", "them") if many else ("is", "it")
+    was = "were" if many else "was"
+    if row["event"] == "placed":
+        return f"Your {item} {are} {where}. I saw {them} there {when}."
+    then = f"someone picked {them} up" if row["picked_up"] else f"{them} went out of view"
+    return f"Your {item} {was} last {where}. Then {then}, {when}."

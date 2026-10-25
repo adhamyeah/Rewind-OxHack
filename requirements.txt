@@ -5,3 +5,5 @@ fastapi
 uvicorn
 google-genai
 python-dotenv
+pyttsx3          # speaks names with the computer's own voice
+sounddevice      # microphone
