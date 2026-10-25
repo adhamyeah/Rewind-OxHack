@@ -5,13 +5,13 @@ Gemini is slow (seconds), so it runs here. The queue holds ONE job: if a newer k
 arrives while Gemini is busy, the older waiting one is dropped (stale anyway).
 
 What one keyframe's detections are made of (capture pipeline from Adham's detection branch):
-  1. Gemini SCAN of the whole frame, with people blurred out (Gemini never sees faces).
-     It lists every item it can see that is NOT being held or worn.
-  2. Items in someone's hand or being worn, from the local YOLO model (the frame never
-     leaves the laptop for these). Memory marks them "with you".
+  1. Gemini SCAN of the whole frame, with people's heads blurred out (Gemini never sees faces).
+     It lists every item it can see, including ones in a hand.
+  2. Items worn or held that the scan missed (e.g. glasses on a blurred face), from the local
+     YOLO model. Memory marks anything on a person "with you".
   3. Items YOLO saw that the scan didn't list: Gemini CHECKS each one in an orange box.
-     YES = add it, NONE = "that isn't a pen" (ignored at that spot for 2 min),
-     HELD = in a hand (look again in 8 s). Verdicts are remembered while the item stays put,
+     YES or HELD = add it (HELD means in a hand, memory shows "with you"),
+     NONE = "that isn't a pen" (ignored at that spot for 2 min). Verdicts are remembered while the item stays put,
      so a still table costs no extra calls.
 If Gemini fails or is off, we fall back to the live YOLO boxes (people removed).
 """
@@ -74,7 +74,7 @@ class KeyframeWorker:
         if self.use_gemini and time.time() >= self.gemini_off_until:
             try:
                 self.status = "gemini"
-                private = blur_people(frame.copy(), people)  # Gemini never sees faces
+                private = blur_people(frame.copy(), people)  # heads blurred: Gemini never sees faces
                 dets = list(self.detect_fn(private))
             except Exception as e:
                 self._cool_down("Gemini", e, "gemini_off_until")
@@ -112,7 +112,7 @@ class KeyframeWorker:
             box = d[:4]
             cached = self.verdicts.get(item)
             if cached and not _far_apart(cached[1], box, width) and now < cached[2]:
-                if cached[0] == "ok":
+                if cached[0] in ("ok", "held"):
                     extras.append(d)
                 continue
             if now < self.checks_off_until:
@@ -127,13 +127,13 @@ class KeyframeWorker:
                 self._cool_down("Gemini check", e, "checks_off_until")
                 continue
             print(f"[worker] check: YOLO's {item} -> {verdict or 'unclear'}")
-            if verdict == "ok":
-                self.verdicts[item] = ("ok", box, float("inf"))  # holds while the item stays put
+            if verdict in ("ok", "held"):  # "held" = in a hand: still on the table's owner, memory says "with you"
+                self.verdicts[item] = (verdict, box, float("inf"))  # holds while the item stays put
                 extras.append(d)
             elif verdict == "none":
                 self.verdicts[item] = ("none", box, now + config.VETO_NONE_SECONDS)
-            else:  # "held", or a reply we couldn't read: look again shortly
-                self.verdicts[item] = (verdict or "unclear", box, now + config.VETO_HELD_SECONDS)
+            else:  # a reply we couldn't read: look again shortly
+                self.verdicts[item] = ("unclear", box, now + config.VETO_HELD_SECONDS)
         return extras
 
     def _cool_down(self, what, e, attr):

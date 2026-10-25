@@ -75,17 +75,19 @@ SETTLE_SECONDS = 1.0        # scene must stay still this long before a keyframe 
 MISSES_TO_LEAVE = 2         # keyframes an item must be missing from before it is "gone"
 NEAR_FRACTION = 0.3         # items closer than this (fraction of frame width, centre to centre) are "next to" each other
 HELD_OVERLAP = 0.7          # item box this much inside a person's box = held/worn, not on the table
-HELD_UPPER_FRACTION = 0.6   # ...and its centre in the top 60% of that person (face, chest, raised hand)
+HELD_UPPER_FRACTION = 0.85  # ...and its centre in the top 85% of that person (face, chest, hands); lower = table
 MOVE_FRACTION = 0.05        # centre must shift by more than 5% of frame width to count as "moved"
 
 # --- Gemini ---
-# Scan (one per keyframe). People are blurred out before the photo is sent, so Gemini never sees
-# faces; items in someone's hand come from the local YOLO model instead (see keyframe_worker.py).
+# Scan (one per keyframe). People's heads are blurred out before the photo is sent (see
+# PERSON_BLUR_FRACTION), so Gemini never sees faces, but hands and the table stay visible: items
+# in someone's hand are found like any other and memory marks them "with you".
+PERSON_BLUR_FRACTION = 0.4    # blur the top 40% of each person box (head and shoulders), not the whole body
 GEMINI_PROMPT = (
-    "This is a still photo from a camera in someone's home. Blurred areas are people. "
-    "Find each of these objects that is clearly visible: "
+    "This is a still photo from a camera in someone's home. Blurred areas are people's faces. "
+    "Find each of these objects that is clearly visible, including ones held in a hand: "
     + ", ".join(f'"{item}"' for item in ITEMS)
-    + ". Skip anything that is being held, carried or worn by a person. "
+    + ". "
     "Return ONLY a JSON list, no other text. Each entry: "
     '{"label": one of the names above exactly, "box_2d": [ymin, xmin, ymax, xmax] normalized to 0-1000}. '
     "Return [] if none of them are visible."

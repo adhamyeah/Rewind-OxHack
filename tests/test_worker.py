@@ -216,3 +216,29 @@ def test_person_boxes_are_passed_to_memory_for_held_detection(monkeypatch, tmp_p
     assert mem.keyframes[0].people == [(200, 50, 440, 480)]
     assert mem.items["glasses"].held
     w.stop()
+
+
+def test_gemini_held_verdict_adds_the_item(monkeypatch, tmp_path):
+    keys = (500, 400, 550, 450, "keys", 0.4)
+    mem, w = make_worker(monkeypatch, tmp_path, lambda f: [], check_fn=lambda f, box, item: "held")
+    w.submit(FRAME, [keys])
+    assert wait_for(lambda: len(mem.keyframes) == 1)
+    assert [d[4] for d in mem.keyframes[0].detections] == ["keys"]  # in a hand still counts as seen
+    w.stop()
+
+
+def test_scan_prompt_no_longer_skips_held_items():
+    assert "Skip anything" not in kw.config.GEMINI_PROMPT and "held in a hand" in kw.config.GEMINI_PROMPT
+
+
+def test_only_the_head_is_blurred_before_gemini(monkeypatch, tmp_path):
+    rng = np.random.default_rng(0)
+    frame = rng.integers(0, 255, (480, 640, 3), dtype=np.uint8)
+    seen = []
+    mem, w = make_worker(monkeypatch, tmp_path, lambda f: seen.append(f.copy()) or [])
+    w.submit(frame, [(100, 100, 300, 400, "person", 0.9)])
+    assert wait_for(lambda: len(mem.keyframes) == 1)
+    head_end = 100 + int(300 * kw.config.PERSON_BLUR_FRACTION)
+    assert not np.array_equal(seen[0][100:head_end, 100:300], frame[100:head_end, 100:300])
+    assert np.array_equal(seen[0][head_end:, :], frame[head_end:, :])  # hands and table in front stay visible
+    w.stop()

@@ -113,9 +113,11 @@ def test_check_draws_the_orange_box_and_names_the_item(monkeypatch):
     assert frame.sum() == 0  # the caller's frame is not drawn on
 
 
-def test_blur_people_only_touches_people():
+def test_blur_people_only_blurs_the_head_area():
     rng = np.random.default_rng(1)
     img = rng.integers(0, 255, (100, 100, 3), dtype=np.uint8)
     out = gd.blur_people(img.copy(), [(10, 10, 50, 90), (-5, -5, 5, 5)])  # boxes may poke off the edge
-    assert not np.array_equal(out[10:90, 10:50], img[10:90, 10:50])
-    assert np.array_equal(out[:, 60:], img[:, 60:])
+    head_end = 10 + int(80 * gd.config.PERSON_BLUR_FRACTION)
+    assert not np.array_equal(out[10:head_end, 10:50], img[10:head_end, 10:50])  # head blurred
+    assert np.array_equal(out[head_end:, :], img[head_end:, :])                  # hands and table untouched
+    assert np.array_equal(out[:, 60:], img[:, 60:])                              # outside the person untouched

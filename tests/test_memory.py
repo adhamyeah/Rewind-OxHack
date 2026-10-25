@@ -194,3 +194,10 @@ def test_held_item_that_leaves_view_is_not_said_to_be_on_the_table():
     m.add_keyframe([])
     text = m.where("glasses").text
     assert "with you" in text and "on the table" not in text.replace("taken off the table", "")
+
+
+def test_phone_in_a_hand_at_chest_height_is_with_you():
+    m = Memory(W, H)
+    hand_phone = (300, 300, 340, 350, "phone", 1.0)   # centre y=325: below the old 60% line (308), inside the new 85%
+    m.add_keyframe([hand_phone], people=[PERSON])
+    assert m.where("phone").text == "The phone is with you, being worn or held."

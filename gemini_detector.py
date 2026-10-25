@@ -5,7 +5,7 @@ Two jobs (both from Adham's detection branch):
   SCAN   gemini_detect(): one look at the whole settled scene, every item with a box.
   CHECK  gemini_check():  YOLO saw an item the scan didn't list; Gemini looks at it in an
          orange box and says YES / NONE (that isn't a pen) / HELD (it's in a hand).
-The keyframe worker blurs people out before either call, so Gemini never sees faces.
+The keyframe worker blurs people's heads before either call, so Gemini never sees faces.
 
 Detections come back in the same tuple as everywhere else:
 (x1, y1, x2, y2, label, confidence) in PIXELS. Gemini has no confidence, so we use 1.0.
@@ -39,11 +39,13 @@ def normalise_label(text):
 
 
 def blur_people(img, people):
-    """Blur every person box in `img` (in place). Gemini never sees faces."""
+    """Blur the head area (top PERSON_BLUR_FRACTION) of every person box in `img`, in place.
+    Gemini never sees faces, but it can still see hands and the table in front of the person."""
     h, w = img.shape[:2]
     for x1, y1, x2, y2 in people:
         x1, y1 = max(0, int(x1)), max(0, int(y1))
         x2, y2 = min(w, int(x2)), min(h, int(y2))
+        y2 = y1 + int((y2 - y1) * config.PERSON_BLUR_FRACTION)
         if x2 > x1 and y2 > y1:
             img[y1:y2, x1:x2] = cv2.GaussianBlur(img[y1:y2, x1:x2], (31, 31), 0)
     return img
