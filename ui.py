@@ -88,14 +88,44 @@ class UIState:
             self._highlight, self.caption = None, ""
 
 
+def overlap(a, b):
+    """How much of the smaller box lies inside the other (0..1). Gemini and YOLO draw the same
+    object with slightly different boxes, so plain IoU is too strict."""
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    smaller = max(1, min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])))
+    return ix * iy / smaller
+
+
+def relabel_with_memory(yolo_dets, memory_dets, min_overlap=0.5):
+    """YOLO's fast boxes with memory's (Gemini's) names. A YOLO item box that overlaps a known item
+    takes its name; one that matches nothing is dropped, because that is where YOLO's wrong guesses
+    ("remote control" for a water bottle) come from. People pass through. One box per known item."""
+    out = [d for d in yolo_dets if d[4] == "person"]
+    best = {}  # index of the memory box -> best (highest-confidence) YOLO box matching it
+    for d in yolo_dets:
+        if d[4] == "person":
+            continue
+        scored = [(overlap(d[:4], m[:4]), i) for i, m in enumerate(memory_dets)]
+        score, i = max(scored, default=(0, None))
+        if i is not None and score >= min_overlap and (i not in best or d[5] > best[i][5]):
+            best[i] = d
+    for i, d in best.items():
+        out.append(d[:4] + (memory_dets[i][4], d[5]))
+    return out
+
+
 def pick_live_boxes(yolo_dets, last_keyframe_dets, scene_changed, memory_busy):
     """Which boxes the LIVE view draws.
 
-    While things move (or memory is still thinking) we show YOLO's fast live boxes.
-    Once the scene is settled and memory has caught up, we show the memory's boxes
-    (Gemini's labels), so the live view and the answers use the same names.
+    Settled and memory caught up: memory's boxes (Gemini's names).
+    Moving or memory still thinking: YOLO's boxes, which follow movement quickly, but renamed by
+    memory so the live view never shows a name the answers would not use.
+    Before the first keyframe there is no memory yet, so YOLO's raw boxes are all we have.
     """
-    if last_keyframe_dets is None or scene_changed or memory_busy:
+    if last_keyframe_dets is None:
         return yolo_dets
+    if scene_changed or memory_busy:
+        return relabel_with_memory(yolo_dets, last_keyframe_dets)
     # keep YOLO's grey person boxes; items come from memory
     return [d for d in yolo_dets if d[4] == "person"] + list(last_keyframe_dets)
