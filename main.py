@@ -3,8 +3,8 @@
 Live window shows the camera with boxes. YOLO-World only runs once the scene
 has changed and then gone still (the hand has left), plus a slow re-check.
 When an item settles somewhere, a row goes into rewind.db with a photo
-(people blurred), and Claude describes the spot in the background
-("next to the blue mug") if ANTHROPIC_API_KEY is set in .env.
+(people blurred), and Gemini describes the spot in the background
+("next to the blue mug") if GEMINI_API_KEY is set in .env.
 
 Run:  python main.py                         (Q in the window to quit)
       python main.py --source 1              (another camera)
@@ -13,20 +13,22 @@ Run:  python main.py                         (Q in the window to quit)
 """
 
 import argparse
-import base64
 import glob
 import os
 import sys
 import threading
 import time
 
-import anthropic
 import cv2
 import torch
 from dotenv import load_dotenv
+from google import genai
+from google.genai import errors, types
 from ultralytics import YOLOWorld
 
 import db
+
+load_dotenv()                       # GEMINI_API_KEY (and optional GEMINI_MODEL) from .env
 
 # --- what to look for ---
 ITEMS = ["keys", "glasses", "wallet", "phone", "remote control", "mug", "headphones", "pen"]
@@ -51,8 +53,8 @@ SPOT_CHANGED = 25.0         # grey difference where the item sat that means it r
 SNAP_DIR = "snapshots"
 KEEP_SNAPSHOTS_HOURS = 24
 
-# --- Claude ---
-CLAUDE_MODEL = "claude-opus-5-5"
+# --- Gemini ---
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")   # override in .env
 DESCRIBE_PROMPT = (
     "The {item} is inside the orange box. In under 15 words, say where it is relative to "
     "nearby objects, as you would to an elderly person. Start with a word like 'on', 'in' "
@@ -123,7 +125,7 @@ def detect(model, frame, names, imgsz, device):
 
 
 def rough_place(box, width):
-    """Fallback place when Claude isn't available: left / middle / right of the view."""
+    """Fallback place when Gemini isn't available: left / middle / right of the view."""
     x = (box[0] + box[2]) / 2 / width
     if x < 1 / 3:
         return "on the left of the camera view"
@@ -132,40 +134,31 @@ def rough_place(box, width):
     return "on the right of the camera view"
 
 
-# ---------- Claude ----------
+# ---------- Gemini ----------
 
 def describe(client, image_path, item):
     """One plain-English phrase about where the item is, from its snapshot. None on failure."""
     with open(image_path, "rb") as f:
-        data = base64.standard_b64encode(f.read()).decode("utf-8")
+        image = types.Part.from_bytes(data=f.read(), mime_type="image/jpeg")
     try:
-        response = client.beta.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2000,
-            output_config={"effort": "low"},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
-                {"type": "text", "text": DESCRIBE_PROMPT.format(item=item)},
-            ]}],
-        )
-    except anthropic.AuthenticationError:
-        print("Claude: the API key in .env was rejected; using rough places instead")
+        response = client.models.generate_content(
+            model=GEMINI_MODEL, contents=[image, DESCRIBE_PROMPT.format(item=item)])
+    except errors.ClientError as e:
+        if e.code in (401, 403):
+            print("Gemini: the API key in .env was rejected; using rough places instead")
+        elif e.code == 429:
+            print("Gemini: rate limited; using the rough place for this one")
+        else:
+            print(f"Gemini: request error {e.code} {e.message}; using the rough place")
         return None
-    except anthropic.RateLimitError:
-        print("Claude: rate limited; using the rough place for this one")
+    except errors.ServerError as e:
+        print(f"Gemini: server error {e.code}; using the rough place for this one")
         return None
-    except anthropic.APIStatusError as e:
-        print(f"Claude: API error {e.status_code}; using the rough place for this one")
+    except Exception as e:                               # network errors (httpx) and anything else
+        print(f"Gemini: couldn't get a description ({type(e).__name__}); using the rough place")
         return None
-    except anthropic.APIConnectionError:
-        print("Claude: no internet; using the rough place for this one")
-        return None
-    if response.stop_reason == "refusal":
-        return None
-    text = next((b.text for b in response.content if b.type == "text"), "").strip().rstrip(".")
-    return text or None
+    text = (response.text or "").strip().rstrip(".")   # empty if Gemini blocked the image
+    return text[:1].lower() + text[1:] or None         # it goes mid-sentence: "Your keys are on..."
 
 
 def describe_in_background(client, event_id, image_path, item):
@@ -175,7 +168,7 @@ def describe_in_background(client, event_id, image_path, item):
             con = db.open_db()               # own connection: sqlite objects stay in their thread
             db.set_description(con, event_id, phrase)
             con.close()
-            print(f"            Claude: {item} {phrase}")
+            print(f"            Gemini: {item} {phrase}")
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -198,8 +191,8 @@ def delete_old_snapshots():
 
 
 class Memory:
-    def __init__(self, con, claude):
-        self.db, self.claude, self.items = con, claude, {}
+    def __init__(self, con, gemini):
+        self.db, self.gemini, self.items = con, gemini, {}
         os.makedirs(SNAP_DIR, exist_ok=True)
 
     def update(self, frame, dets):
@@ -222,8 +215,8 @@ class Memory:
             s.update(present=True, zone=zone, box=box, crop=grey_crop(frame, box), touched=False)
             image = self._snapshot(frame, name, box, people, now)
             event_id = self._log(name, "placed", zone, box, now, image)
-            if self.claude:
-                describe_in_background(self.claude, event_id, image, name)
+            if self.gemini:
+                describe_in_background(self.gemini, event_id, image, name)
 
         unsure = False
         for name, s in self.items.items():
@@ -252,7 +245,7 @@ class Memory:
             x1, y1 = max(0, x1), max(0, y1)
             if x2 > x1 and y2 > y1:
                 img[y1:y2, x1:x2] = cv2.GaussianBlur(img[y1:y2, x1:x2], (51, 51), 0)
-        cv2.rectangle(img, box[:2], box[2:], (0, 165, 255), 4)   # the orange box Claude is told about
+        cv2.rectangle(img, box[:2], box[2:], (0, 165, 255), 4)   # the orange box Gemini is told about
         path = f"{SNAP_DIR}/{name.replace(' ', '_')}_{int(now * 1000)}.jpg"
         cv2.imwrite(path, img)
         return path
@@ -286,10 +279,12 @@ def main():
     args = parser.parse_args()
     source = int(args.source) if args.source.isdigit() else args.source
 
-    load_dotenv()                                        # reads ANTHROPIC_API_KEY from .env
-    claude = anthropic.Anthropic() if os.getenv("ANTHROPIC_API_KEY") else None
-    print("Claude descriptions: " + ("on" if claude else
-          "off (put ANTHROPIC_API_KEY in .env to turn on)"))
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    # retry busy (429/503) replies a few times: they're usually gone a second later
+    retry = types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=4, initial_delay=1.0))
+    gemini = genai.Client(api_key=key, http_options=retry) if key else None
+    print(f"Gemini descriptions: on ({GEMINI_MODEL})" if gemini else
+          "Gemini descriptions: off (put GEMINI_API_KEY in .env to turn on)")
 
     device = pick_device()
     imgsz = args.imgsz or (480 if device == "cpu" else 640)
@@ -306,7 +301,7 @@ def main():
     print(f"device={device} imgsz={imgsz} looking for: {', '.join(items)}")
 
     delete_old_snapshots()
-    memory = Memory(db.open_db(), claude)
+    memory = Memory(db.open_db(), gemini)
     is_file = not isinstance(source, int)
     frame_gap = 1 / (cam.get(cv2.CAP_PROP_FPS) or 30) if is_file else 0
 

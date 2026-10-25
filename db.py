@@ -14,7 +14,7 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS events (
     at REAL,                        -- unix time
     image TEXT,                     -- snapshot path, placed events only
     picked_up INT DEFAULT 0,
-    description TEXT)               -- Claude's "next to the blue mug", filled in a moment later"""
+    description TEXT)               -- Gemini's "next to the blue mug", filled in a moment later"""
 
 
 def open_db(path=DB_PATH):

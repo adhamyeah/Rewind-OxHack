@@ -34,7 +34,7 @@ def ago(t, now=None):
 
 def answer(row):
     item, when = row["item"], ago(row["at"])
-    where = row["place"] or row["zone"]          # Claude's description when we have it
+    where = row["place"] or row["zone"]          # Gemini's description when we have it
     many = item.endswith("s")                    # keys, glasses -> plural
     are, them = ("are", "them") if many else ("is", "it")
     was = "were" if many else "was"
