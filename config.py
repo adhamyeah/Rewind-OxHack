@@ -108,6 +108,14 @@ MAX_CHECKS_PER_KEYFRAME = 3   # Gemini checks per keyframe at most; any left ove
 VETO_NONE_SECONDS = 120       # Gemini said "that's not a pen": ignore YOLO's pen at that spot for 2 minutes
 VETO_HELD_SECONDS = 8         # Gemini said "it's in a hand": look again after 8 seconds
 CHECK_MOVE_FRACTION = 0.08    # a verdict holds until the box moves more than 8% of the frame width
+# Free tier = 20 requests/day PER MODEL, so when one model runs out Rewind moves to the next.
+# The first entry of each list is the one set above (or in .env); the rest are backups.
+GEMINI_SCAN_BACKUPS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"]
+GEMINI_CHECK_BACKUPS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest"]
+GEMINI_SCAN_MODELS = [GEMINI_SCAN_MODEL] + [m for m in GEMINI_SCAN_BACKUPS if m != GEMINI_SCAN_MODEL]
+GEMINI_CHECK_MODELS = [GEMINI_CHECK_MODEL] + [m for m in GEMINI_CHECK_BACKUPS if m != GEMINI_CHECK_MODEL]
+GEMINI_MODEL_PAUSE_QUOTA = 3600.0   # a model whose daily quota is used up is skipped this long
+GEMINI_MODEL_PAUSE_OTHER = 60.0     # a model that errors (503, not found) is skipped this long
 GEMINI_THINKING = os.getenv("GEMINI_THINKING", "low")  # Gemini 3 'thinking' level for the scan; default thinking took up to 16 s, 'low' ~2 s. "" = model default
 GEMINI_MIN_GAP = 1.0        # seconds between live Gemini calls (batch scripts add their own ~4 s)
 ASK_WAIT_SECONDS = 8.0      # a question waits up to this long for memory to catch up with the table

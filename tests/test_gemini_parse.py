@@ -140,3 +140,45 @@ def test_scan_asks_for_low_thinking_and_survives_a_model_that_refuses_it(monkeyp
     assert gemini_detect(frame, client=SimpleNamespace(models=Models())) == [(0, 0, 50, 50, "keys", 1.0)]
     assert seen[0]["thinking_config"] == {"thinking_level": "low"}
     assert "thinking_config" not in seen[1]
+
+
+def _client_with(outcomes, used):
+    class Models:
+        def generate_content(self, model, **kw):
+            used.append(model)
+            outcome = outcomes[model]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return SimpleNamespace(text=outcome)
+
+    return SimpleNamespace(models=Models())
+
+
+def test_a_model_out_of_quota_is_skipped_and_the_next_one_used(monkeypatch):
+    monkeypatch.setattr(gd, "_image_part", lambda jpg: "IMAGE")
+    monkeypatch.setattr(gd.config, "GEMINI_MIN_GAP", 0)
+    monkeypatch.setattr(gd.config, "GEMINI_SCAN_MODELS", ["big", "lite"])
+    used = []
+    client = _client_with({"big": RuntimeError("429 RESOURCE_EXHAUSTED"),
+                           "lite": j([{"label": "mug", "box_2d": [0, 0, 500, 500]}])}, used)
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    assert gemini_detect(frame, client=client) == [(0, 0, 50, 50, "mug", 1.0)]
+    gemini_detect(frame, client=client)
+    assert used == ["big", "lite", "lite"]  # the used-up model is not asked again
+
+
+def test_all_models_failing_raises_so_the_worker_falls_back_to_yolo(monkeypatch):
+    monkeypatch.setattr(gd, "_image_part", lambda jpg: "IMAGE")
+    monkeypatch.setattr(gd.config, "GEMINI_MIN_GAP", 0)
+    monkeypatch.setattr(gd.config, "GEMINI_SCAN_MODELS", ["a", "b"])
+    client = _client_with({"a": RuntimeError("429 RESOURCE_EXHAUSTED"), "b": RuntimeError("503 UNAVAILABLE")}, [])
+    try:
+        gemini_detect(np.zeros((100, 100, 3), dtype=np.uint8), client=client)
+        raise AssertionError("should have raised")
+    except RuntimeError as e:
+        assert "503" in str(e)
+
+
+def test_the_configured_model_comes_first_and_backups_follow_without_repeats():
+    assert gd.config.GEMINI_SCAN_MODELS[0] == gd.config.GEMINI_SCAN_MODEL
+    assert len(set(gd.config.GEMINI_SCAN_MODELS)) == len(gd.config.GEMINI_SCAN_MODELS)

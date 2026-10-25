@@ -73,6 +73,35 @@ def _image_part(jpg_bytes):
     return types.Part.from_bytes(data=jpg_bytes, mime_type="image/jpeg")
 
 
+_paused_until = {}  # model -> time.time() before which we do not try it
+
+
+def _generate(models, contents, cfg, client=None):
+    """generate_content on the first model that works. A model that is out of quota (or erroring) is
+    paused and the next backup is tried, so one used-up free-tier model doesn't switch Gemini off.
+    Raises the last error if every model failed."""
+    client = client or _get_client()
+    last_error = None
+    for model in models:
+        if time.time() < _paused_until.get(model, 0):
+            continue
+        try:
+            try:
+                return client.models.generate_content(model=model, contents=contents, config=cfg)
+            except Exception as e:
+                if "thinking_config" not in cfg or "thinking" not in str(e).lower():
+                    raise
+                no_thinking = {k: v for k, v in cfg.items() if k != "thinking_config"}  # model refuses it
+                return client.models.generate_content(model=model, contents=contents, config=no_thinking)
+        except Exception as e:
+            quota = "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e)
+            pause = config.GEMINI_MODEL_PAUSE_QUOTA if quota else config.GEMINI_MODEL_PAUSE_OTHER
+            _paused_until[model] = time.time() + pause
+            print(f"[gemini] {model} {'out of quota' if quota else 'failed: ' + str(e)[:60].replace(chr(10), ' ')}; trying the next model")
+            last_error = e
+    raise last_error or RuntimeError("no Gemini model available")
+
+
 def _wait_turn():
     """Free-tier limits: never call in a tight loop."""
     global _last_call
@@ -138,13 +167,7 @@ def gemini_detect(frame, client=None):
     cfg = {"response_mime_type": "application/json"}
     if config.GEMINI_THINKING:
         cfg["thinking_config"] = {"thinking_level": config.GEMINI_THINKING}  # far faster, same boxes
-    try:
-        reply = client.models.generate_content(model=config.GEMINI_SCAN_MODEL, contents=contents, config=cfg)
-    except Exception as e:
-        if "thinking" not in str(e).lower():
-            raise
-        cfg.pop("thinking_config")  # this model doesn't take a thinking level: use its default
-        reply = client.models.generate_content(model=config.GEMINI_SCAN_MODEL, contents=contents, config=cfg)
+    reply = _generate(config.GEMINI_SCAN_MODELS, contents, cfg, client)
     return parse_gemini_json(reply.text, w, h)
 
 
@@ -167,10 +190,8 @@ def gemini_check(frame, box, item, client=None):
     if not ok:
         raise RuntimeError("could not encode frame")
     _wait_turn()
-    reply = client.models.generate_content(
-        model=config.GEMINI_CHECK_MODEL,
-        contents=[_image_part(jpg.tobytes()), config.GEMINI_CHECK_PROMPT.format(item=item)],
-    )
+    reply = _generate(config.GEMINI_CHECK_MODELS,
+                      [_image_part(jpg.tobytes()), config.GEMINI_CHECK_PROMPT.format(item=item)], {}, client)
     return read_verdict(reply.text)
 
 
