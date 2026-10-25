@@ -78,3 +78,23 @@ def test_gemini_failure_triggers_cooldown_so_it_is_not_retried(monkeypatch, tmp_
     assert wait_for(lambda: len(mem.keyframes) == 2)
     assert len(calls) == 1  # second keyframe skipped Gemini during the cooldown
     w.stop()
+
+
+def test_missing_item_asks_for_a_confirming_keyframe(monkeypatch, tmp_path):
+    asked = []
+    results = [[(1, 1, 9, 9, "mug", 1.0)], [], []]
+    monkeypatch.setattr(kw.config, "KEYFRAME_DIR", str(tmp_path))
+    mem = Memory()
+    w = kw.KeyframeWorker(mem, use_gemini=True, detect_fn=lambda f: results.pop(0),
+                          on_pending=lambda: asked.append(1))
+    w.submit(FRAME, [])
+    assert wait_for(lambda: len(mem.keyframes) == 1)
+    assert asked == []                       # mug seen: nothing to confirm
+    w.submit(FRAME, [])
+    assert wait_for(lambda: len(mem.keyframes) == 2)
+    assert wait_for(lambda: asked == [1])    # mug missing once: asks for another keyframe
+    w.submit(FRAME, [])
+    assert wait_for(lambda: len(mem.keyframes) == 3)
+    time.sleep(0.2)
+    assert asked == [1]                      # now confirmed gone: no more requests
+    w.stop()

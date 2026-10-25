@@ -157,6 +157,10 @@ class LiveDetector:
             if took < gap:
                 time.sleep(gap - took)
 
+    def force_keyframe(self):
+        """Ask for one more keyframe of the (still) scene without waiting for motion."""
+        self.dirty = True
+
     def latest(self):
         with self.lock:
             return list(self.detections)

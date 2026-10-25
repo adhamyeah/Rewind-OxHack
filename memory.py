@@ -145,6 +145,12 @@ class Memory:
             text = f"The {label} {verb} last seen {when}{'' if place == 'on its own' else ' ' + place}. {has} been taken off the table."
             return Answer(text, st.keyframe, st.box)
 
+    def pending_misses(self):
+        """True if some item is missing from the latest keyframe but not yet counted as gone.
+        The next keyframe will settle it, so the app asks for one instead of waiting for motion."""
+        with self.lock:
+            return any(st.present and st.misses > 0 for st in self.items.values())
+
     def present_items(self):
         with self.lock:
             return [l for l, s in self.items.items() if s.present]

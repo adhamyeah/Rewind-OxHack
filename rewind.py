@@ -50,14 +50,19 @@ def main():
     memory = Memory()
     ui_state = ui.UIState()
     store = Store()
-    worker = KeyframeWorker(memory, store, use_gemini=use_gemini)
+    worker = KeyframeWorker(memory, store, use_gemini=use_gemini,
+                            on_pending=lambda: det.force_keyframe())  # det is created just below
     cam = Camera(args.source)
     det = LiveDetector(cam, pick_device(), on_keyframe=worker.submit)
     cam.start()
     det.start()
     knob = Knob(args.knob) if args.knob else None
 
-    answerer = Answerer(memory, ui_state)
+    def memory_ready():
+        # settled scene, no keyframe being processed, and no item waiting to be confirmed gone
+        return not det.dirty and not worker.busy and not memory.pending_misses()
+
+    answerer = Answerer(memory, ui_state, ready=memory_ready)
     threading.Thread(target=terminal_questions, args=(answerer,), daemon=True).start()
 
     cv2.namedWindow(config.WINDOW, cv2.WINDOW_NORMAL)

@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import wave
 
 import config
@@ -46,11 +47,13 @@ def speak_elevenlabs(text):
 
 
 class Answerer:
-    def __init__(self, memory, ui_state, speak=speak_elevenlabs, pick_label=gemini_pick_label):
+    def __init__(self, memory, ui_state, speak=speak_elevenlabs, pick_label=gemini_pick_label,
+                 ready=lambda: True):
         self.memory = memory
         self.ui = ui_state
         self.speak = speak
         self.pick_label = pick_label
+        self.ready = ready  # True when memory is up to date with the table
 
     def ask(self, question):
         """Answer one question. Returns the answer text."""
@@ -60,12 +63,21 @@ class Answerer:
             print(f"[answer] {text}")
             self._say(text)
             return text
+        self._wait_until_ready()
         answer = self.memory.where(label)
         if answer.keyframe is not None:
             self.ui.request_jump(answer.keyframe, answer.box, label, answer.text)  # screen first
         print(f"[answer] {answer.text}")
         self._say(answer.text)
         return answer.text
+
+    def _wait_until_ready(self):
+        """If the table just changed, give memory a few seconds to catch up before answering."""
+        end = time.time() + config.ASK_WAIT_SECONDS
+        if not self.ready():
+            print("[answer] memory is catching up with the table...")
+        while not self.ready() and time.time() < end:
+            time.sleep(0.1)
 
     def _say(self, text):
         def run():

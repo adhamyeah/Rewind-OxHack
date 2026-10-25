@@ -137,3 +137,13 @@ def test_duplicate_labels_collapse_to_one():
     _, ev = m.add_keyframe([(0, 0, 10, 10, "pen", 0.3), (200, 200, 220, 220, "pen", 0.9)])
     assert kinds(ev) == [("pen", "appeared")]
     assert m.items["pen"].box == (200, 200, 220, 220)
+
+
+def test_pending_misses_until_confirmed_gone():
+    m = Memory(W, H)
+    m.add_keyframe([KEYS])
+    assert not m.pending_misses()
+    m.add_keyframe([])               # missing once: not gone yet, but a recheck is wanted
+    assert m.pending_misses()
+    m.add_keyframe([])               # second miss: now it has left
+    assert not m.pending_misses()

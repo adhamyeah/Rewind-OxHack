@@ -17,11 +17,13 @@ from gemini_detector import gemini_detect
 
 
 class KeyframeWorker:
-    def __init__(self, memory, store=None, use_gemini=True, detect_fn=gemini_detect, on_done=None):
+    def __init__(self, memory, store=None, use_gemini=True, detect_fn=gemini_detect, on_done=None,
+                 on_pending=None):
         self.memory = memory
         self.store = store
         self.use_gemini = use_gemini
         self.detect_fn = detect_fn
+        self.on_pending = on_pending  # called when an item is missing but not yet confirmed gone
         self.on_done = on_done       # on_done(keyframe, events), e.g. to refresh the trackbar
         self.cond = threading.Condition()
         self.job = None              # (frame, yolo_dets) or None
@@ -74,6 +76,8 @@ class KeyframeWorker:
                 print(f"[memory] {ev.label} {ev.kind}")
             self._save(kf, frame, events)
             self.status = "idle"
+            if self.on_pending and self.memory.pending_misses():
+                self.on_pending()
             if self.on_done:
                 self.on_done(kf, events)
 
