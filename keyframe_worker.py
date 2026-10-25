@@ -71,7 +71,8 @@ class KeyframeWorker:
             dets = self._detections_for(frame, yolo_dets)
             self.last_source = f"{self.status} {time.perf_counter() - started:.1f}s"
             print(f"[worker] keyframe via {self.last_source}")
-            kf, events = self.memory.add_keyframe(dets, image=frame)
+            people = [d[:4] for d in yolo_dets if d[4] == "person"]
+            kf, events = self.memory.add_keyframe(dets, image=frame, people=people)
             for ev in events:
                 print(f"[memory] {ev.label} {ev.kind}")
             self._save(kf, frame, events)

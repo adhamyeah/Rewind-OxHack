@@ -147,3 +147,50 @@ def test_pending_misses_until_confirmed_gone():
     assert m.pending_misses()
     m.add_keyframe([])               # second miss: now it has left
     assert not m.pending_misses()
+
+
+# ---- held / worn items ----
+PERSON = (200, 50, 440, 480)                      # a person: top 50, height 430 -> upper 60% ends at y=308
+GLASSES = (280, 100, 360, 130, "glasses", 1.0)    # on the face: inside the person, near the top
+PHONE_LOW = (300, 400, 360, 440, "phone", 1.0)    # inside the person's box but low: on the table in front
+
+
+def test_worn_item_is_with_you_not_on_the_table():
+    m = Memory(W, H)
+    m.add_keyframe([GLASSES], people=[PERSON])
+    text = m.where("glasses").text
+    assert text == "The glasses are with you, being worn or held."
+
+
+def test_item_low_in_a_persons_box_is_still_on_the_table():
+    m = Memory(W, H)
+    m.add_keyframe([PHONE_LOW], people=[PERSON])
+    assert "on the table" in m.where("phone").text
+
+
+def test_item_outside_any_person_is_on_the_table():
+    m = Memory(W, H)
+    m.add_keyframe([MUG], people=[PERSON])
+    assert "on the table" in m.where("mug").text
+
+
+def test_picked_up_and_put_down_replace_moved_events():
+    m = Memory(W, H)
+    on_table = (300, 100, 380, 130, "glasses", 1.0)
+    m.add_keyframe([on_table])
+    _, ev = m.add_keyframe([GLASSES], people=[PERSON])
+    assert kinds(ev) == [("glasses", "picked up")]
+    shifted = (290, 110, 370, 140, "glasses", 1.0)    # still worn but a different spot: no 'moved' spam
+    _, ev = m.add_keyframe([shifted], people=[PERSON])
+    assert ev == []
+    _, ev = m.add_keyframe([on_table])
+    assert kinds(ev) == [("glasses", "put down")]
+
+
+def test_held_item_that_leaves_view_is_not_said_to_be_on_the_table():
+    m = Memory(W, H)
+    m.add_keyframe([GLASSES], people=[PERSON])
+    m.add_keyframe([])
+    m.add_keyframe([])
+    text = m.where("glasses").text
+    assert "with you" in text and "on the table" not in text.replace("taken off the table", "")

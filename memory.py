@@ -20,6 +20,7 @@ class Keyframe:
     time: float
     image: object            # BGR frame, or None in tests
     detections: list         # [(x1, y1, x2, y2, label, conf)]
+    people: list = field(default_factory=list)   # [(x1, y1, x2, y2)] person boxes seen at that moment
 
 
 @dataclass
@@ -28,6 +29,7 @@ class ItemState:
     keyframe: int            # index of the keyframe where it was last seen
     time: float
     present: bool = True
+    held: bool = False       # in someone's hand / on their body rather than on the table
     misses: int = 0
     left_time: float = 0.0
 
@@ -36,7 +38,7 @@ class ItemState:
 class Event:
     time: float
     label: str
-    kind: str                # "appeared" | "moved" | "left"
+    kind: str                # "appeared" | "moved" | "left" | "picked up" | "put down"
     keyframe: int
     box: tuple
 
@@ -67,6 +69,19 @@ def describe_surroundings(box, others, width):
     return "next to " + " and ".join(f"the {n}" for n in names)
 
 
+def is_held(box, people):
+    """True if the item sits mostly inside a person's box, in its upper part (worn glasses, a phone
+    in a raised hand). An item low in the person's box is probably on the table in front of them."""
+    x1, y1, x2, y2 = box
+    area = max(1, (x2 - x1) * (y2 - y1))
+    cy = (y1 + y2) / 2
+    for px1, py1, px2, py2 in people:
+        inside = max(0, min(x2, px2) - max(x1, px1)) * max(0, min(y2, py2) - max(y1, py1))
+        if inside / area >= config.HELD_OVERLAP and cy <= py1 + config.HELD_UPPER_FRACTION * (py2 - py1):
+            return True
+    return False
+
+
 def ago(seconds):
     seconds = int(seconds)
     if seconds < 5:
@@ -89,11 +104,11 @@ class Memory:
         self.items = {}      # label -> ItemState
         self.events = []
 
-    def add_keyframe(self, detections, image=None, when=None):
+    def add_keyframe(self, detections, image=None, when=None, people=()):
         """Record a keyframe. Returns (Keyframe, [new Events])."""
         when = self.clock() if when is None else when
         with self.lock:
-            kf = Keyframe(len(self.keyframes), when, image, list(detections))
+            kf = Keyframe(len(self.keyframes), when, image, list(detections), list(people))
             self.keyframes.append(kf)
             new_events = []
 
@@ -106,11 +121,14 @@ class Memory:
             for label, d in best.items():
                 box = d[:4]
                 old = self.items.get(label)
+                held = is_held(box, people)
                 if old is None or not old.present:
                     new_events.append(Event(when, label, "appeared", kf.index, box))
-                elif self._shift(old.box, box) > config.MOVE_FRACTION * self.width:
+                elif held != old.held:  # a held item moves with its person, so say picked up / put down instead
+                    new_events.append(Event(when, label, "picked up" if held else "put down", kf.index, box))
+                elif not held and self._shift(old.box, box) > config.MOVE_FRACTION * self.width:
                     new_events.append(Event(when, label, "moved", kf.index, box))
-                self.items[label] = ItemState(box, kf.index, when)
+                self.items[label] = ItemState(box, kf.index, when, held=held)
 
             for label, st in self.items.items():
                 if label in best or not st.present:
@@ -136,12 +154,19 @@ class Memory:
                 return Answer(f"I haven't seen the {label} yet.")
             seen_with = {d[4]: d for d in self.keyframes[st.keyframe].detections if d[4] != label}
             place = describe_surroundings(st.box, seen_with.values(), self.width)
+            if st.present and st.held:
+                text = f"The {label} {'are' if verb == 'were' else 'is'} with you, being worn or held."
+                return Answer(text, st.keyframe, st.box)
             if st.present:
                 place = "on the table" if place == "on its own" else f"on the table, {place}"
                 text = f"The {label} {'are' if verb == 'were' else 'is'} {place}."
                 return Answer(text, st.keyframe, st.box)
             when = ago(self.clock() - st.time)
             has = "They've" if verb == "were" else "It's"
+            if st.held:  # last seen on a person, so don't claim it was on the table
+                gone = "They're" if verb == "were" else "It's"
+                return Answer(f"The {label} {verb} last seen {when} with you. {gone} out of view now.",
+                              st.keyframe, st.box)
             text = f"The {label} {verb} last seen {when}{'' if place == 'on its own' else ' ' + place}. {has} been taken off the table."
             return Answer(text, st.keyframe, st.box)
 

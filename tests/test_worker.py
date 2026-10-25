@@ -98,3 +98,14 @@ def test_missing_item_asks_for_a_confirming_keyframe(monkeypatch, tmp_path):
     time.sleep(0.2)
     assert asked == [1]                      # now confirmed gone: no more requests
     w.stop()
+
+
+def test_person_boxes_are_passed_to_memory_for_held_detection(monkeypatch, tmp_path):
+    glasses = (280, 100, 360, 130, "glasses", 1.0)
+    person = (200, 50, 440, 480, "person", 0.9)
+    mem, w = make_worker(monkeypatch, tmp_path, lambda f: [glasses])
+    w.submit(FRAME, [person])
+    assert wait_for(lambda: len(mem.keyframes) == 1)
+    assert mem.keyframes[0].people == [(200, 50, 440, 480)]
+    assert mem.items["glasses"].held
+    w.stop()
