@@ -2,8 +2,9 @@
 
 - Live window with boxes around every object and person YOLO knows (80 everyday
   things: person, cell phone, cup, bottle, laptop, book, remote...).
-- Each frame is cleaned up before detection: averaged over time to remove
-  sensor noise, smoothed, brightened if dark, and contrast-boosted.
+- Each frame is cleaned up before detection without blurring: still pixels are
+  averaged over time to remove sensor grain (moving ones aren't, so nothing
+  smears), dark frames are brightened, contrast is boosted, edges sharpened.
 - Says the name of each thing as it comes into view ("cup", "person").
 - Listens to the microphone: ask "where is my phone?" or "what can you see?".
 - When an item settles somewhere it's logged to rewind.db with a photo
@@ -14,6 +15,7 @@ Run:  python main.py                          (Q quit, E toggle enhanced view)
       python main.py --source clip.mp4        (a video file)
       python main.py --items "keys,glasses"   (things outside the library, via YOLO-World)
       python main.py --no-voice --no-mic
+      python main.py --verbose                (also print what it sees and does)
 """
 
 import argparse
@@ -40,6 +42,14 @@ from ultralytics import YOLO, YOLOWorld
 import db
 
 load_dotenv()                       # GEMINI_API_KEY (and optional GEMINI_MODEL) from .env
+cv2.setNumThreads(4)                # ultralytics turns OpenCV threading off; frame clean-up needs it
+torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2 - 2))   # leave cores for video (30 fps vs 23)
+VERBOSE = False                     # --verbose: print every placed/gone/heard line, not just speak names
+
+
+def log(text):
+    if VERBOSE:
+        print(text)
 
 # --- detection ---
 MODEL = "yolo11s.pt"                # standard YOLO "library": 80 everyday things; downloads once (19 MB)
@@ -51,9 +61,14 @@ NOT_ITEMS = {"person", "dining table", "chair", "couch", "bed", "tv", "toilet", 
              "refrigerator", "oven", "bench", "potted plant"}
 
 # --- frame clean-up before detection ---
-WORK_WIDTH = 960                    # frames are resized to at most this wide
-TEMPORAL = 0.5                      # weight of the newest frame in the running average
+WORK_WIDTH = 1280                   # full 720p: shown and cleaned at the camera's own resolution
+STILL_WEIGHT = 0.2                  # still pixels: newest frame counts 20% (averages ~5 frames of grain away)
+MOVING_DIFF = 20                    # a pixel that changed more than this (grey levels) really moved: no averaging, no smear
+CONTRAST_LIMIT = 1.5                # local contrast boost; higher also boosts leftover grain
+SHARPEN = 0.5                       # how much real edges are sharpened
+SHARPEN_ABOVE = 6                   # detail weaker than this (grey levels) is grain: not sharpened
 TARGET_BRIGHTNESS = 120             # darker frames get their shadows lifted
+CAMERA_BRIGHTNESS = (64, 192)       # range the auto-brightness may move the camera's own setting in
 
 # --- memory rules ---
 CONFIRM_PASSES = 4                  # same place this many detections in a row = put down
@@ -112,26 +127,42 @@ def open_camera(source):
 
 
 class Enhancer:
-    """Cleans each frame before detection: less noise, better light and contrast."""
+    """Cleans each frame before detection without blurring it.
+
+    Noise: each pixel is averaged over time only while it stays still. A pixel
+    that really changes (a hand, an object moving) takes the new frame at once,
+    so nothing smears, and there's no spatial blur to soften edges.
+    Light: shadows are lifted if the frame is dark, local contrast is boosted,
+    and a light sharpening pass keeps edges crisp.
+    """
 
     def __init__(self):
         self.avg = None
-        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        self.clahe = cv2.createCLAHE(clipLimit=CONTRAST_LIMIT, tileGridSize=(8, 8))
+        self.dot = np.ones((3, 3), np.uint8)
+        self.pad = np.ones((5, 5), np.uint8)
 
     def __call__(self, frame):
-        f = frame.astype(np.float32)
-        if self.avg is None or self.avg.shape != f.shape:
-            self.avg = f
+        if self.avg is None or self.avg.shape != frame.shape:
+            self.avg = frame.astype(np.float32)
         else:
-            cv2.accumulateWeighted(f, self.avg, TEMPORAL)   # averages out flickering sensor grain
+            change = cv2.cvtColor(cv2.absdiff(frame, cv2.convertScaleAbs(self.avg)), cv2.COLOR_BGR2GRAY)
+            moved = (change >= MOVING_DIFF).astype(np.uint8)
+            # real movement is a blob (a hand); noise is lone dots: drop the dots, pad the blobs' edges
+            moved = cv2.dilate(cv2.morphologyEx(moved, cv2.MORPH_OPEN, self.dot), self.pad)
+            cv2.accumulateWeighted(frame, self.avg, STILL_WEIGHT, mask=1 - moved)   # still: average grain away
+            cv2.accumulateWeighted(frame, self.avg, 1.0, mask=moved)                # moved: take it as it is now
         img = cv2.convertScaleAbs(self.avg)
-        img = cv2.bilateralFilter(img, 5, 40, 40)            # smooths what's left, keeps edges sharp
         l, a, b = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2LAB))
         mean = float(l.mean())
         if mean < TARGET_BRIGHTNESS - 20:                    # too dark: lift the shadows
             gamma = np.log(TARGET_BRIGHTNESS / 255) / np.log(max(mean, 1.0) / 255)
             l = cv2.LUT(l, (((np.arange(256) / 255) ** gamma) * 255).astype(np.uint8))
         l = self.clahe.apply(l)                              # local contrast: edges stand out
+        # sharpen real edges only: flat areas (walls, table) are left alone so grain isn't boosted
+        soft = cv2.GaussianBlur(l, (0, 0), 1.2)
+        edges = cv2.compare(cv2.absdiff(l, soft), SHARPEN_ABOVE, cv2.CMP_GE)
+        cv2.copyTo(cv2.addWeighted(l, 1 + SHARPEN, soft, -SHARPEN, 0), edges, l)
         return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
 
 
@@ -191,7 +222,7 @@ class Speaker(threading.Thread):
         self.enabled, self.queue, self.speaking_until = enabled, queue.Queue(), 0.0
 
     def say(self, text):
-        print(f"  says: {text}")
+        log(f"  says: {text}")
         if self.enabled:
             self.queue.put(text)
 
@@ -240,7 +271,7 @@ def describe(client, image_path, item):
         response = client.models.generate_content(
             model=GEMINI_MODEL, contents=[image, DESCRIBE_PROMPT.format(item=item)])
     except Exception as e:
-        print(f"Gemini: {gemini_error(e)}; using the rough place")
+        log(f"Gemini: {gemini_error(e)}; using the rough place")
         return None
     text = (response.text or "").strip().rstrip(".")   # empty if Gemini blocked the image
     return text[:1].lower() + text[1:] or None         # it goes mid-sentence: "Your keys are on..."
@@ -265,7 +296,7 @@ def describe_in_background(client, event_id, image_path, item):
             con = db.open_db()               # own connection: sqlite objects stay in their thread
             db.set_description(con, event_id, phrase)
             con.close()
-            print(f"            Gemini: {item} {phrase}")
+            log(f"            Gemini: {item} {phrase}")
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -337,10 +368,10 @@ class Listener(threading.Thread):
                 config=types.GenerateContentConfig(response_mime_type="application/json"))
             reply = json.loads(response.text or "{}")
         except Exception as e:
-            print(f"Gemini (voice): {gemini_error(e)}")
+            log(f"Gemini (voice): {gemini_error(e)}")
             return
         heard, item = reply.get("heard", ""), str(reply.get("item", "NONE")).strip()
-        print(f"  heard: {heard!r} -> {item}")
+        log(f"  heard: {heard!r} -> {item}")
         if item.upper() == "EVERYTHING":
             self.speaker.say(f"I can see {spoken_list(visible)}." if visible else "I can't see anything right now.")
         elif item in self.known:
@@ -431,7 +462,7 @@ class Memory:
 
     def _log(self, item, event, zone, box, at, image, picked_up=False):
         event_id = db.log_event(self.db, item, event, zone, box, at, image, picked_up)
-        print(f"{time.strftime('%H:%M:%S', time.localtime(at))}  {item} {event} {zone}"
+        log(f"{time.strftime('%H:%M:%S', time.localtime(at))}  {item} {event} {zone}"
               + (" (picked up)" if picked_up else ""))
         return event_id
 
@@ -469,14 +500,53 @@ class Detector(threading.Thread):
 
 # ---------- window ----------
 
+class AutoBrightness:
+    """Nudges the camera's own brightness so the picture isn't washed out or murky.
+
+    Your camera ignores exposure settings, but its brightness setting works:
+    lowering it cut blown-out highlights from 0.7% to 0.1% in testing.
+    The original value is put back when Rewind quits.
+    """
+
+    def __init__(self, cam):
+        self.cam, self.original = cam, cam.get(cv2.CAP_PROP_BRIGHTNESS)
+        self.value, self.next = self.original, 0.0
+        self.enabled = CAMERA_BRIGHTNESS[0] <= self.original <= CAMERA_BRIGHTNESS[1]
+
+    def update(self, frame, now):
+        if not self.enabled or now < self.next:
+            return
+        self.next = now + 0.5
+        grey = cv2.cvtColor(cv2.resize(frame, (160, 90)), cv2.COLOR_BGR2GRAY)
+        step = 0
+        if grey.mean() > 150 or (grey >= 250).mean() > 0.02:
+            step = -8                                    # washed out
+        elif grey.mean() < 90:
+            step = 8                                     # murky
+        if step:
+            self.value = min(max(self.value + step, CAMERA_BRIGHTNESS[0]), CAMERA_BRIGHTNESS[1])
+            self.cam.set(cv2.CAP_PROP_BRIGHTNESS, self.value)
+
+    def restore(self):
+        if self.enabled:
+            self.cam.set(cv2.CAP_PROP_BRIGHTNESS, self.original)
+
+
+def label(frame, text, x, y, colour):
+    """Smooth text on a solid tag, readable on any background."""
+    (w, h), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+    y = max(h + base + 4, y)
+    cv2.rectangle(frame, (x, y - h - base - 4), (x + w + 8, y), colour, -1)
+    cv2.putText(frame, text, (x + 4, y - base - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (20, 20, 20), 1, cv2.LINE_AA)
+
+
 def draw(frame, dets, status):
     for x1, y1, x2, y2, name, conf in dets:
         colour = (80, 200, 80) if name == "person" else (0, 165, 255)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-        cv2.putText(frame, f"{name} {conf:.0%}", (x1 + 2, max(18, y1 - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
-    cv2.rectangle(frame, (0, 0), (frame.shape[1], 34), (0, 0, 0), -1)
-    cv2.putText(frame, status, (10, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2, cv2.LINE_AA)
+        label(frame, f"{name} {conf:.0%}", x1, y1, colour)
+    cv2.rectangle(frame, (0, 0), (frame.shape[1], 30), (0, 0, 0), -1)
+    cv2.putText(frame, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
     return frame
 
 
@@ -491,7 +561,10 @@ def main():
                         help="how loud speech must be (watch the mic number in the window)")
     parser.add_argument("--no-window", action="store_true", help="run without the video window")
     parser.add_argument("--seconds", type=float, help="stop after this many seconds")
+    parser.add_argument("--verbose", action="store_true", help="print what happens, not just speak names")
     args = parser.parse_args()
+    global VERBOSE
+    VERBOSE = args.verbose
     source = int(args.source) if args.source.isdigit() else args.source
 
     key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -529,6 +602,8 @@ def main():
             print("Microphone: off (needs GEMINI_API_KEY in .env to understand speech)")
 
     is_file = not isinstance(source, int)
+    brightness = AutoBrightness(cam) if not is_file else None
+    print("Running. Rewind will say the names of what it sees. Q in the window to quit.")
     frame_gap = 1 / (cam.get(cv2.CAP_PROP_FPS) or 30) if is_file else 0
     show_enhanced = True
     fps, fps_frames, fps_t0 = 0.0, 0, time.monotonic()
@@ -548,6 +623,8 @@ def main():
             fps, fps_frames, fps_t0 = fps_frames / (now - fps_t0), 0, now
 
         raw = to_work_size(frame)
+        if brightness:
+            brightness.update(raw, now)
         clean = enhancer(raw)
         detector.submit(clean)
 
@@ -566,8 +643,10 @@ def main():
         if args.seconds and now - started >= args.seconds:
             break
 
-    print(f"video {fps:.0f} fps, detect {detector.fps:.0f} fps, seeing: "
-          + (", ".join(sorted({d[4] for d in detector.dets})) or "nothing"))
+    log(f"video {fps:.0f} fps, detect {detector.fps:.0f} fps, seeing: "
+        + (", ".join(sorted({d[4] for d in detector.dets})) or "nothing"))
+    if brightness:
+        brightness.restore()
     cam.release()
     cv2.destroyAllWindows()
 

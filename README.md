@@ -53,7 +53,11 @@ and a tile appears on the page.
 Ask out loud: "where is my phone?" or "what can you see?". Rewind answers with its voice.
 
 In the window: **E** switches between the cleaned-up (enhanced) and raw camera view, **Q** quits.
-The top bar shows video fps, detection speed and the microphone level.
+The top bar shows video fps, detection speed and the microphone level. The video is shown at the
+camera's full resolution, and the camera's brightness is adjusted automatically so it doesn't wash out.
+
+The terminal stays quiet: Rewind just says the names of what it sees. Add `--verbose` to also print
+every placed/gone event, Gemini description and heard question.
 
 Options: `--source 1` (another camera), `--source clip.mp4` (a video),
 `--items "keys,glasses"` (names outside the 80, uses YOLO-World), `--no-voice`, `--no-mic`,
