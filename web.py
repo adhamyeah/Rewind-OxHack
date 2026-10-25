@@ -6,6 +6,8 @@ Web UI on http://127.0.0.1:<port> using only Python's built-in HTTP server (no e
   /frame/<i>.jpg     keyframe i with its boxes; ?hl=keys adds the yellow highlight on that item
   /api/state         JSON the page polls: keyframes, items on the table, events, status, pending jump
   POST /api/ask      {"question": "..."} -> {"text": ..., "jump": {...} or null}
+  POST /api/listen   raw audio recorded in the browser -> ElevenLabs speech-to-text -> same as /api/ask,
+                     plus "heard": what it understood
 
 Everything slow (Gemini, voice) already runs on other threads, so these handlers only read
 memory and encode JPEGs. Bound to 127.0.0.1 so only this computer can open it.
@@ -20,9 +22,11 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 
 import ui
+from listen import transcribe as default_transcribe
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STREAM_FPS = 20
+MAX_AUDIO_BYTES = 5_000_000   # ~ several minutes of speech; a question is a few seconds
 
 
 def encode_jpeg(image, quality=82):
@@ -35,9 +39,10 @@ def encode_jpeg(image, quality=82):
 class App:
     """Everything the handlers need, in one place."""
 
-    def __init__(self, memory, ui_state, cam, det, worker, answerer, gemini_on):
+    def __init__(self, memory, ui_state, cam, det, worker, answerer, gemini_on, transcribe=default_transcribe):
         self.memory, self.ui_state, self.cam = memory, ui_state, cam
         self.det, self.worker, self.answerer, self.gemini_on = det, worker, answerer, gemini_on
+        self.transcribe = transcribe
 
     def state(self):
         mem = self.memory
@@ -123,6 +128,8 @@ def make_handler(app):
 
         def do_POST(self):
             try:
+                if self.path == "/api/listen":
+                    return self._listen()
                 if self.path != "/api/ask":
                     return self._send(b"not found", "text/plain", 404)
                 size = int(self.headers.get("Content-Length", 0))
@@ -136,6 +143,28 @@ def make_handler(app):
             except Exception as e:
                 print(f"[web] ask failed: {e}")
                 self._json({"error": str(e)}, 500)
+
+        def _listen(self):
+            """Audio from the browser's microphone -> text -> the same answer path as typing."""
+            size = int(self.headers.get("Content-Length", 0))
+            if size > MAX_AUDIO_BYTES:
+                left = min(size, 8 * MAX_AUDIO_BYTES)  # read and drop the upload so the browser sees our reply
+                while left > 0:
+                    left -= len(self.rfile.read(min(65536, left)))
+                return self._json({"error": "That recording is too long."}, 413)
+            audio = self.rfile.read(size)
+            if len(audio) < 1000:
+                return self._json({"error": "I didn't hear anything. Hold the button while you speak."}, 400)
+            try:
+                heard = app.transcribe(audio, self.headers.get("Content-Type", "audio/webm")).strip()
+            except Exception as e:
+                print(f"[listen] speech-to-text failed: {e}")
+                return self._json({"error": "I couldn't turn that into text. You can type the question instead."}, 502)
+            if not heard:
+                return self._json({"error": "I didn't catch that. Try again a bit closer to the mic."}, 422)
+            print(f"[listen] heard: {heard}")
+            text = app.answerer.ask(heard)
+            self._json({"heard": heard, "text": text, "jump": app.ui_state.take_web_jump()})
 
         def _stream(self):
             self.send_response(200)

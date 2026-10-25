@@ -49,7 +49,9 @@ python rewind.py --source 1     # camera index; opens http://127.0.0.1:8000 in y
 ```
 
 The page has the live view, a slider through the table's history, and a box to ask
-"where are my keys?". Questions typed in the terminal work too.
+"where are my keys?". Hold the **Talk** button (or the space bar) to ask by voice: the browser
+records, ElevenLabs speech-to-text turns it into text (your ElevenLabs key needs Speech to Text
+access). Questions typed in the terminal work too.
 
 Options: `--port 8001` (if 8000 is busy), `--no-browser`, `--no-gemini` (YOLO only),
 `--window` (the old OpenCV window instead of the web page: `,` `.` `l` `q` keys).

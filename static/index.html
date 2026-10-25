@@ -65,6 +65,11 @@
   form.ask { display: flex; gap: 8px; }
   form.ask input { flex: 1; min-width: 0; font: inherit; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--line);
                    background: var(--bg); color: var(--ink); }
+  button.mic { display: inline-flex; align-items: center; gap: 6px; user-select: none; touch-action: none; }
+  button.mic.on { background: var(--live); border-color: var(--live); color: #fff; animation: pulse 1s infinite; }
+  button.mic[disabled] { opacity: .55; cursor: wait; }
+  .hint { margin: 8px 0 0; font-size: .82rem; color: var(--muted); }
+  .heard { color: var(--muted); font-size: .9rem; margin-bottom: 4px; }
   .answer { margin-top: 14px; padding: 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); min-height: 3.2em; }
   .answer.busy { color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -119,7 +124,9 @@
         <form class="ask" id="askForm">
           <input id="q" autocomplete="off" placeholder="Where are my keys?" aria-label="Your question">
           <button class="primary" type="submit">Ask</button>
+          <button class="mic" id="mic" type="button" aria-label="Hold to talk" title="Hold to talk (or hold the space bar)">&#127908; Talk</button>
         </form>
+        <p class="hint">Hold <b>Talk</b> (or the space bar), say "where are my keys?", then let go.</p>
         <div class="answer" id="answer">Ask about anything on the table. Rewind answers out loud and jumps to the moment it was last seen.</div>
       </div>
 
@@ -247,6 +254,72 @@ async function ask(question) {
     if (data.jump) { await poll(); goTo(data.jump.keyframe, data.jump.label, data.jump.caption); }
   } catch (e) { box.className = "answer"; box.textContent = "Could not reach Rewind. Is it still running?"; }
 }
+
+// ---- push to talk: record in the browser, the server turns it into text ----
+const mic = $("mic");
+let recorder = null, chunks = [], micStream = null, startedAt = 0, wantStop = false;
+
+function setAnswer(text, heard) {
+  const box = $("answer");
+  box.className = "answer";
+  box.innerHTML = "";
+  if (heard) { const h = document.createElement("div"); h.className = "heard"; h.textContent = "Heard: \u201c" + heard + "\u201d"; box.appendChild(h); }
+  box.append(text);
+}
+
+async function startTalking() {
+  if (recorder || mic.disabled) return;
+  wantStop = false;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    setAnswer("I can't use the microphone. Allow microphone access for this page (the lock icon in the address bar), or type your question.");
+    return;
+  }
+  if (wantStop) { micStream.getTracks().forEach(t => t.stop()); micStream = null; return; }  // let go before it was ready
+  const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  recorder = new MediaRecorder(micStream, type ? { mimeType: type } : undefined);
+  chunks = [];
+  recorder.ondataavailable = ev => { if (ev.data.size) chunks.push(ev.data); };
+  recorder.onstop = sendRecording;
+  startedAt = Date.now();
+  recorder.start();
+  mic.classList.add("on");
+  mic.innerHTML = "&#9679; Listening\u2026";
+}
+
+function stopTalking() {
+  wantStop = true;
+  if (recorder && recorder.state === "recording") recorder.stop();
+}
+
+async function sendRecording() {
+  const rec = recorder;
+  recorder = null;
+  micStream.getTracks().forEach(t => t.stop());
+  micStream = null;
+  mic.classList.remove("on");
+  mic.innerHTML = "&#127908; Talk";
+  if (Date.now() - startedAt < 400) { setAnswer("That was too short. Hold the button while you speak."); return; }
+  mic.disabled = true;
+  const box = $("answer");
+  box.className = "answer busy"; box.textContent = "Listening\u2026";
+  try {
+    const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+    const r = await fetch("/api/listen", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
+    const data = await r.json();
+    setAnswer(data.text || data.error || "No answer", data.heard);
+    if (data.jump) { await poll(); goTo(data.jump.keyframe, data.jump.label, data.jump.caption); }
+  } catch (e) { setAnswer("Could not reach Rewind. Is it still running?"); }
+  mic.disabled = false;
+}
+
+mic.addEventListener("pointerdown", ev => { ev.preventDefault(); startTalking(); });
+["pointerup", "pointerleave", "pointercancel"].forEach(t => mic.addEventListener(t, stopTalking));
+document.addEventListener("keydown", ev => {
+  if (ev.code === "Space" && !ev.repeat && !(ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON")) { ev.preventDefault(); startTalking(); }
+});
+document.addEventListener("keyup", ev => { if (ev.code === "Space") stopTalking(); });
 
 $("askForm").onsubmit = ev => { ev.preventDefault(); const q = $("q").value.trim(); if (q) { ask(q); $("q").value = ""; } };
 slider.oninput = () => { goTo(+slider.value, "", ""); };

@@ -111,3 +111,73 @@ def test_live_stream_sends_multipart_jpeg(server):
         assert "multipart/x-mixed-replace" in r.headers["Content-Type"]
         chunk = r.read(400)
     assert b"--frame" in chunk and b"image/jpeg" in chunk
+
+
+# ---- voice questions ----
+def listen(url, audio, content_type="audio/webm"):
+    req = urllib.request.Request(url + "/api/listen", audio, {"Content-Type": content_type})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def listen_error(url, audio):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        listen(url, audio)
+    return e.value.code, json.loads(e.value.read())["error"]
+
+
+def make_server(transcribe):
+    mem = Memory(160, 120)
+    img = np.full((120, 160, 3), 50, dtype=np.uint8)
+    mem.add_keyframe([(10, 10, 40, 40, "mug", 1.0)], image=img)
+    ui_state = UIState()
+    answerer = Answerer(mem, ui_state, speak=lambda t: None, pick_label=lambda q: None)
+    app = App(mem, ui_state, StubCam(), StubDet(), StubWorker(), answerer, True, transcribe=transcribe)
+    return start_server(app, 0)
+
+
+def test_voice_question_is_answered_like_a_typed_one():
+    seen = {}
+
+    def fake(audio, content_type):
+        seen["args"] = (len(audio), content_type)
+        return " Where is the mug? "
+
+    srv, url = make_server(fake)
+    try:
+        data = listen(url, b"x" * 5000, "audio/webm;codecs=opus")
+    finally:
+        srv.shutdown()
+    assert data["heard"] == "Where is the mug?" and "mug" in data["text"]
+    assert data["jump"]["label"] == "mug"
+    assert seen["args"] == (5000, "audio/webm;codecs=opus")
+
+
+def test_voice_empty_transcript_and_tiny_recording_are_friendly_errors():
+    srv, url = make_server(lambda a, c: "   ")
+    try:
+        assert listen_error(url, b"x" * 5000)[0] == 422
+        assert listen_error(url, b"x" * 10)[0] == 400
+    finally:
+        srv.shutdown()
+
+
+def test_voice_transcription_failure_does_not_crash_the_server():
+    def boom(a, c):
+        raise RuntimeError("401 unauthorized sk_secret")
+
+    srv, url = make_server(boom)
+    try:
+        code, msg = listen_error(url, b"x" * 5000)
+        assert code == 502 and "type the question" in msg and "sk_secret" not in msg
+        assert json.loads(get(url + "/api/state")[2])["present"] == ["mug"]  # still serving
+    finally:
+        srv.shutdown()
+
+
+def test_voice_too_long_is_rejected():
+    srv, url = make_server(lambda a, c: "mug")
+    try:
+        assert listen_error(url, b"x" * 5_000_001)[0] == 413
+    finally:
+        srv.shutdown()
