@@ -66,6 +66,7 @@ SETTLE_SECONDS = 1.0        # scene must stay still this long before a keyframe 
 
 # --- memory ---
 MISSES_TO_LEAVE = 2         # keyframes an item must be missing from before it is "gone"
+NEAR_FRACTION = 0.3         # items closer than this (fraction of frame width, centre to centre) are "next to" each other
 MOVE_FRACTION = 0.05        # centre must shift by more than 5% of frame width to count as "moved"
 
 # --- Gemini ---

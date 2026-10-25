@@ -1,4 +1,4 @@
-from memory import Memory, describe_position
+from memory import Memory, describe_surroundings
 
 W, H = 640, 480
 KEYS = (100, 100, 160, 140, "keys", 1.0)
@@ -69,7 +69,7 @@ def test_where_present():
     m = Memory(W, H)
     m.add_keyframe([MUG])
     a = m.where("mug")
-    assert "on the table" in a.text and "bottom right" in a.text
+    assert a.text == "The mug is on the table."
     assert a.keyframe == 0 and a.box == MUG[:4]
 
 
@@ -101,16 +101,35 @@ def test_plural_grammar():
     assert "wallet was last seen" in m.where("wallet").text
 
 
-def test_describe_position_thirds():
-    assert describe_position((0, 0, 20, 20), W, H) == "top left"
-    assert describe_position((310, 0, 330, 20), W, H) == "top"
-    assert describe_position((620, 0, 640, 20), W, H) == "top right"
-    assert describe_position((0, 230, 20, 250), W, H) == "left"
-    assert describe_position((310, 230, 330, 250), W, H) == "middle"
-    assert describe_position((620, 230, 640, 250), W, H) == "right"
-    assert describe_position((0, 460, 20, 480), W, H) == "bottom left"
-    assert describe_position((310, 460, 330, 480), W, H) == "bottom"
-    assert describe_position((620, 460, 640, 480), W, H) == "bottom right"
+def test_surroundings_names_nearest_items_within_range():
+    box = (100, 100, 140, 140, "x", 1.0)[:4]
+    pen = (150, 100, 170, 140, "pen", 1.0)        # very close
+    mug = (260, 100, 300, 140, "mug", 1.0)        # ~160 px away, inside 0.3 * 640 = 192
+    far = (600, 400, 620, 440, "wallet", 1.0)     # far away
+    assert describe_surroundings(box, [mug, pen, far], W) == "next to the pen and the mug"
+    assert describe_surroundings(box, [far], W) == "on its own"
+    assert describe_surroundings(box, [], W) == "on its own"
+
+
+def test_surroundings_only_two_names():
+    box = (100, 100, 140, 140)
+    others = [(150 + i * 10, 100, 160 + i * 10, 140, l, 1.0) for i, l in enumerate(["pen", "mug", "wallet"])]
+    assert describe_surroundings(box, others, W) == "next to the pen and the mug"
+
+
+def test_where_names_neighbours_from_that_keyframe():
+    m = Memory(W, H)
+    m.add_keyframe([KEYS, (170, 100, 210, 140, "mug", 1.0)])
+    assert m.where("keys").text == "The keys are on the table, next to the mug."
+
+
+def test_where_gone_uses_neighbours_from_when_last_seen():
+    m = Memory(W, H)
+    m.add_keyframe([KEYS, (170, 100, 210, 140, "mug", 1.0)])
+    m.add_keyframe([(170, 100, 210, 140, "mug", 1.0)])
+    m.add_keyframe([(170, 100, 210, 140, "mug", 1.0)])
+    text = m.where("keys").text
+    assert "keys were last seen" in text and "next to the mug" in text and "They've been taken off" in text
 
 
 def test_duplicate_labels_collapse_to_one():

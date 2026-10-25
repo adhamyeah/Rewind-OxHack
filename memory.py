@@ -48,19 +48,23 @@ class Answer:
     box: tuple = None
 
 
-def describe_position(box, width, height):
-    """'top left', 'middle', 'bottom right'... by splitting the frame into thirds."""
+def describe_surroundings(box, others, width):
+    """'next to the mug' / 'next to the mug and the pen' / 'on its own'.
+
+    `others` are the other detections in the same keyframe. We name the (up to two)
+    closest ones within NEAR_FRACTION of the frame width, nearest first. No coordinates
+    in the wording: people think "next to the mug", not "bottom right".
+    """
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    col = min(2, int(cx / width * 3))
-    row = min(2, int(cy / height * 3))
-    rows, cols = ["top", "middle", "bottom"], ["left", "middle", "right"]
-    if row == 1 and col == 1:
-        return "middle"
-    if row == 1:
-        return cols[col]
-    if col == 1:
-        return rows[row]
-    return f"{rows[row]} {cols[col]}"
+    near = []
+    for o in others:
+        d = (((o[0] + o[2]) / 2 - cx) ** 2 + ((o[1] + o[3]) / 2 - cy) ** 2) ** 0.5
+        if d <= config.NEAR_FRACTION * width:
+            near.append((d, o[4]))
+    names = [label for _, label in sorted(near)[:2]]
+    if not names:
+        return "on its own"
+    return "next to " + " and ".join(f"the {n}" for n in names)
 
 
 def ago(seconds):
@@ -130,12 +134,15 @@ class Memory:
             st = self.items.get(label)
             if st is None:
                 return Answer(f"I haven't seen the {label} yet.")
-            place = describe_position(st.box, self.width, self.height)
+            seen_with = {d[4]: d for d in self.keyframes[st.keyframe].detections if d[4] != label}
+            place = describe_surroundings(st.box, seen_with.values(), self.width)
             if st.present:
-                text = f"The {label} {'are' if verb == 'were' else 'is'} on the table, {place}."
+                place = "on the table" if place == "on its own" else f"on the table, {place}"
+                text = f"The {label} {'are' if verb == 'were' else 'is'} {place}."
                 return Answer(text, st.keyframe, st.box)
             when = ago(self.clock() - st.time)
-            text = f"The {label} {verb} last seen {when}, {place}. It's been taken off the table."
+            has = "They've" if verb == "were" else "It's"
+            text = f"The {label} {verb} last seen {when}{'' if place == 'on its own' else ' ' + place}. {has} been taken off the table."
             return Answer(text, st.keyframe, st.box)
 
     def present_items(self):
