@@ -69,6 +69,7 @@ PASSES_PER_SECOND = 5
 # --- keyframes: "the scene moved, then went still" ---
 MOTION_PIXEL_DIFF = 25      # a pixel counts as moving if it changed by more than this (0-255)
 MOTION_FRACTION = 0.01      # scene is "moving" if more than 1% of pixels moved
+MAX_MOTION_WAIT = 5.0       # a keyframe fires after this long even if the scene never goes still (a face keeps moving)
 SETTLE_SECONDS = 1.0        # scene must stay still this long before a keyframe fires
 
 # --- memory ---
@@ -105,6 +106,7 @@ MAX_CHECKS_PER_KEYFRAME = 3   # Gemini checks per keyframe at most; any left ove
 VETO_NONE_SECONDS = 120       # Gemini said "that's not a pen": ignore YOLO's pen at that spot for 2 minutes
 VETO_HELD_SECONDS = 8         # Gemini said "it's in a hand": look again after 8 seconds
 CHECK_MOVE_FRACTION = 0.08    # a verdict holds until the box moves more than 8% of the frame width
+GEMINI_THINKING = os.getenv("GEMINI_THINKING", "low")  # Gemini 3 'thinking' level for the scan; default thinking took up to 16 s, 'low' ~2 s. "" = model default
 GEMINI_MIN_GAP = 1.0        # seconds between live Gemini calls (batch scripts add their own ~4 s)
 ASK_WAIT_SECONDS = 8.0      # a question waits up to this long for memory to catch up with the table
 GEMINI_COOLDOWN = 600.0     # after a Gemini failure (e.g. quota), skip Gemini this long and use YOLO

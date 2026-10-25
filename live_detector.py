@@ -54,6 +54,12 @@ def one_label_per_object(dets):
     return keep
 
 
+def should_fire_keyframe(dirty, still_for, dirty_for):
+    """A keyframe is due when the scene changed AND (it has gone still, OR it has been changing so
+    long that waiting is pointless: a moving face never gives a still second)."""
+    return dirty and (still_for >= config.SETTLE_SECONDS or dirty_for >= config.MAX_MOTION_WAIT)
+
+
 def motion_fraction(prev_gate, gate):
     """Share of pixels (0..1) that changed by more than MOTION_PIXEL_DIFF between two gate images."""
     return float((cv2.absdiff(prev_gate, gate) > config.MOTION_PIXEL_DIFF).mean())
@@ -83,6 +89,7 @@ class LiveDetector:
         self.motion = 0.0
         self.still_for = 0.0
         self.dirty = True          # True = scene changed since the last keyframe (first scene counts)
+        self.dirty_since = time.perf_counter()  # when it became dirty (for MAX_MOTION_WAIT)
         self.last_motion = time.perf_counter()
         self.item_ms = 0.0
         self.keyframes_fired = 0
@@ -142,6 +149,8 @@ class LiveDetector:
             if self.prev_gate is not None:
                 self.motion = motion_fraction(self.prev_gate, gate)
                 if self.motion > config.MOTION_FRACTION:
+                    if not self.dirty:
+                        self.dirty_since = now
                     self.dirty = True
                     self.last_motion = now
             self.prev_gate = gate
@@ -163,7 +172,7 @@ class LiveDetector:
                 self.baseline = cv2.addWeighted(gate, config.DRIFT, self.baseline, 1 - config.DRIFT, 0)
 
             # --- fire one keyframe once the scene has settled ---
-            if self.dirty and self.still_for >= config.SETTLE_SECONDS:
+            if should_fire_keyframe(self.dirty, self.still_for, now - self.dirty_since):
                 self.dirty = False
                 dets = self.detect(frame)  # fresh boxes on the settled scene
                 with self.lock:
@@ -179,6 +188,8 @@ class LiveDetector:
 
     def force_keyframe(self):
         """Ask for one more keyframe of the (still) scene without waiting for motion."""
+        if not self.dirty:
+            self.dirty_since = time.perf_counter()
         self.dirty = True
 
     def latest(self):

@@ -134,11 +134,17 @@ def gemini_detect(frame, client=None):
     ok, jpg = cv2.imencode(".jpg", frame)
     if not ok:
         raise RuntimeError("could not encode frame")
-    reply = client.models.generate_content(
-        model=config.GEMINI_SCAN_MODEL,
-        contents=[_image_part(jpg.tobytes()), config.GEMINI_PROMPT],
-        config={"response_mime_type": "application/json"},
-    )
+    contents = [_image_part(jpg.tobytes()), config.GEMINI_PROMPT]
+    cfg = {"response_mime_type": "application/json"}
+    if config.GEMINI_THINKING:
+        cfg["thinking_config"] = {"thinking_level": config.GEMINI_THINKING}  # far faster, same boxes
+    try:
+        reply = client.models.generate_content(model=config.GEMINI_SCAN_MODEL, contents=contents, config=cfg)
+    except Exception as e:
+        if "thinking" not in str(e).lower():
+            raise
+        cfg.pop("thinking_config")  # this model doesn't take a thinking level: use its default
+        reply = client.models.generate_content(model=config.GEMINI_SCAN_MODEL, contents=contents, config=cfg)
     return parse_gemini_json(reply.text, w, h)
 
 

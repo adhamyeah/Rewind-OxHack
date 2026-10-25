@@ -121,3 +121,22 @@ def test_blur_people_only_blurs_the_head_area():
     assert not np.array_equal(out[10:head_end, 10:50], img[10:head_end, 10:50])  # head blurred
     assert np.array_equal(out[head_end:, :], img[head_end:, :])                  # hands and table untouched
     assert np.array_equal(out[:, 60:], img[:, 60:])                              # outside the person untouched
+
+
+def test_scan_asks_for_low_thinking_and_survives_a_model_that_refuses_it(monkeypatch):
+    monkeypatch.setattr(gd, "_image_part", lambda jpg: "IMAGE")
+    monkeypatch.setattr(gd.config, "GEMINI_MIN_GAP", 0)
+    monkeypatch.setattr(gd.config, "GEMINI_THINKING", "low")
+    seen = []
+
+    class Models:
+        def generate_content(self, **kw):
+            seen.append(kw["config"].copy())
+            if "thinking_config" in kw["config"] and len(seen) == 1:
+                raise RuntimeError("400 INVALID_ARGUMENT: thinking_level is not supported")
+            return SimpleNamespace(text=j([{"label": "keys", "box_2d": [0, 0, 500, 500]}]))
+
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    assert gemini_detect(frame, client=SimpleNamespace(models=Models())) == [(0, 0, 50, 50, "keys", 1.0)]
+    assert seen[0]["thinking_config"] == {"thinking_level": "low"}
+    assert "thinking_config" not in seen[1]

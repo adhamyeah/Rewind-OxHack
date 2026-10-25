@@ -22,3 +22,13 @@ def test_separate_objects_are_all_kept():
 def test_iou():
     assert iou((0, 0, 10, 10), (0, 0, 10, 10)) == 1.0
     assert iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
+
+
+def test_keyframe_fires_when_still_or_after_a_long_unsettled_spell():
+    from live_detector import should_fire_keyframe
+    import config
+
+    assert not should_fire_keyframe(False, 99, 99)                         # nothing changed: never
+    assert not should_fire_keyframe(True, 0.2, 1.0)                        # moving, only just started
+    assert should_fire_keyframe(True, config.SETTLE_SECONDS, 1.0)          # went still
+    assert should_fire_keyframe(True, 0.1, config.MAX_MOTION_WAIT)         # never still (moving face): fire anyway
