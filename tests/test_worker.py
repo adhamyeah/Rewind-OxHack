@@ -62,3 +62,19 @@ def test_queue_keeps_only_newest_job(monkeypatch, tmp_path):
     # job 1 started immediately; 2 and 3 were replaced while it ran; only 4 followed
     assert seen == [1, 4]
     w.stop()
+
+
+def test_gemini_failure_triggers_cooldown_so_it_is_not_retried(monkeypatch, tmp_path):
+    calls = []
+
+    def boom(frame):
+        calls.append(1)
+        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    mem, w = make_worker(monkeypatch, tmp_path, boom)
+    w.submit(FRAME, YOLO)
+    assert wait_for(lambda: len(mem.keyframes) == 1)
+    w.submit(FRAME, YOLO)
+    assert wait_for(lambda: len(mem.keyframes) == 2)
+    assert len(calls) == 1  # second keyframe skipped Gemini during the cooldown
+    w.stop()

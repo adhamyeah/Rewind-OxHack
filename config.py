@@ -77,6 +77,7 @@ GEMINI_PROMPT = (
     "Return [] if none are visible."
 )
 GEMINI_MIN_GAP = 4.0        # seconds between Gemini calls (free-tier limits)
+GEMINI_COOLDOWN = 600.0     # after a Gemini failure (e.g. quota), skip Gemini this long and use YOLO
 
 # --- files ---
 KEYFRAME_DIR = "keyframes"

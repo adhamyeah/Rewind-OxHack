@@ -27,6 +27,7 @@ class KeyframeWorker:
         self.job = None              # (frame, yolo_dets) or None
         self.running = True
         self.status = "idle"
+        self.gemini_off_until = 0.0  # time.time() before which we do not even try Gemini
         self.last_source = "-"       # which detector made the last keyframe, and how long it took
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -38,12 +39,15 @@ class KeyframeWorker:
             self.cond.notify()
 
     def _detections_for(self, frame, yolo_dets):
-        if self.use_gemini:
+        if self.use_gemini and time.time() >= self.gemini_off_until:
             try:
                 self.status = "gemini"
                 return self.detect_fn(frame)
             except Exception as e:
-                print(f"[worker] Gemini failed ({e}); using YOLO boxes instead")
+                reason = "quota used up" if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e) else str(e)[:100]
+                self.gemini_off_until = time.time() + config.GEMINI_COOLDOWN
+                print(f"[worker] Gemini failed ({reason}); using YOLO boxes for the next "
+                      f"{config.GEMINI_COOLDOWN / 60:.0f} min")
         self.status = "yolo"
         return [d for d in yolo_dets if d[4] != "person"]
 
