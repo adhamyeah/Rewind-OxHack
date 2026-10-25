@@ -26,7 +26,7 @@ def as_json(row):
         status = row["place"] or row["zone"]
     else:
         status = "picked up" if row["picked_up"] else "out of view"
-    return {"item": row["item"], "status": status, "ago": db.ago(row["at"]),
+    return {"item": row["item"], "type": row["kind"], "status": status, "ago": db.ago(row["at"]),
             "photo": row["photo"], "answer": db.answer(row)}
 
 

@@ -8,12 +8,18 @@ webcam → main.py (Gemini sees) → rewind.db → server.py → web page
 ```
 
 Gemini does all the seeing: there's no local detection model. Each "look" sends one
-cleaned-up frame to Gemini, which returns every object and person with a box, a name
-and where it is ("next to the blue mug"). It can name almost anything.
+cleaned-up frame to Gemini, which returns every object and person with a box, a name,
+its type and where it is ("next to the blue mug"). It can name almost anything.
+
+Each object gets one of these types, shown on its box (one colour per type), spoken with
+its name ("mug, kitchenware") and saved for the web page: person, animal, electronics,
+kitchenware, food & drink, furniture, clothing & accessories, personal care,
+stationery & books, toys & games, tools, plants, decor, fixtures, vehicles, other.
 
 | File | What it does |
 |---|---|
 | `main.py` | Webcam window. Cleans each frame (less noise, better light), asks Gemini to look when the scene changes, draws the boxes, says each new thing's name, listens to the microphone, logs placed/gone with a photo (people blurred) |
+| `cleaning.py` | Cleans all captured data before use: frames (grain, light, sharpness; skips blurry/dark frames), microphone audio (hum, room noise, silence, volume) and Gemini's answers (checks fields, tidies names, merges duplicates, keeps names steady between looks) |
 | `db.py` | The shared `events` table (SQLite) and the spoken answer wording |
 | `server.py` | Web server: `/items`, `/where?q=…`, photos, the page |
 | `static/` | The page: one big button, photo tiles, voice in and out |
@@ -50,11 +56,13 @@ Terminal 2 — the web page, then open http://localhost:8000 in Chrome:
 Put something on the table and take your hand away. Within a few seconds it gets a box,
 Rewind says its name, and a tile appears on the page.
 
-Ask out loud: "where is my phone?" or "what can you see?". Rewind answers with its voice.
+Ask out loud: "where is my phone?" or "what can you see?". Rewind answers with its voice,
+grouped by type: "I can see a phone and a laptop (electronics), a mug (kitchenware) and a person".
 
 In the window: **SPACE** looks now, **E** switches between the cleaned-up and raw view,
 **Q** quits. The top bar shows the video fps, how many looks so far, what Rewind is doing
-("waiting for still", "looking...", "last look 12s ago") or a Gemini problem, and the mic level.
+("waiting for still", "looking...", "last look 12s ago", "waiting: blurred by movement")
+or a Gemini problem, and the mic level.
 
 ## How often it looks (and the free quota)
 

@@ -15,7 +15,8 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS events (
     at REAL,                        -- unix time
     image TEXT,                     -- snapshot path, placed events only
     picked_up INT DEFAULT 0,
-    description TEXT)               -- Gemini's "next to the blue mug", filled in a moment later"""
+    description TEXT,               -- Gemini's "next to the blue mug"
+    kind TEXT)                      -- the object's type: electronics, kitchenware, ..."""
 
 
 def open_db(path=DB_PATH):
@@ -23,16 +24,18 @@ def open_db(path=DB_PATH):
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")   # lets the server read while main.py writes
     db.execute(SCHEMA)
-    if "description" not in [c["name"] for c in db.execute("PRAGMA table_info(events)")]:
-        db.execute("ALTER TABLE events ADD COLUMN description TEXT")   # older rewind.db files
+    columns = [c["name"] for c in db.execute("PRAGMA table_info(events)")]
+    for column in ("description", "kind"):               # older rewind.db files
+        if column not in columns:
+            db.execute(f"ALTER TABLE events ADD COLUMN {column} TEXT")
     return db
 
 
-def log_event(db, item, event, zone, box, at, image=None, picked_up=False):
+def log_event(db, item, event, zone, box, at, image=None, picked_up=False, kind=None):
     cur = db.execute(
-        "INSERT INTO events (item, event, zone, x1, y1, x2, y2, at, image, picked_up) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (item, event, zone, *box, at, image, int(picked_up)))
+        "INSERT INTO events (item, event, zone, x1, y1, x2, y2, at, image, picked_up, kind) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (item, event, zone, *box, at, image, int(picked_up), kind))
     db.commit()
     return cur.lastrowid
 

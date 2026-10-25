@@ -35,9 +35,12 @@ async function refresh() {
     }
     const name = document.createElement("h2");
     name.textContent = i.item;
+    const kind = document.createElement("p");
+    kind.className = "kind";
+    kind.textContent = i.type || "";
     const where = document.createElement("p");
     where.textContent = `${i.status}, ${i.ago}`;
-    tile.append(name, where);
+    tile.append(name, kind, where);
     tile.onclick = () => say(i.answer);
     grid.appendChild(tile);
   }

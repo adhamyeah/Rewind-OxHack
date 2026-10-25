@@ -8,9 +8,11 @@ Looks cost quota (free keys get a few hundred a day), so Rewind only looks when
 the scene has changed and gone still again (a hand put something down and left),
 plus a slow check every minute. Between looks the boxes stay where they were.
 
-- Frames are cleaned up first without blurring: still pixels are averaged over
-  time to remove grain, dark frames brightened, contrast boosted, edges sharpened.
-- Says the name of each thing as it comes into view ("mug", "person").
+- Everything captured is cleaned first (cleaning.py): frames lose grain and get
+  better light without blurring, and blurry/dark frames aren't sent; speech loses
+  hum and room noise; Gemini's answers are checked, tidied and de-duplicated.
+- Each object gets a type (electronics, kitchenware, furniture...), shown on its box.
+- Says the name and type of each thing as it comes into view ("mug, kitchenware").
 - Listens to the microphone: ask "where is my phone?" or "what can you see?".
 - Items that settle somewhere are logged to rewind.db with a photo (people
   blurred) for the web page.
@@ -42,6 +44,7 @@ from google import genai
 from google.genai import errors, types
 
 import db
+from cleaning import TYPES, Enhancer, FrameCheck, clean_audio, clean_detections, noise_profile
 
 load_dotenv()                       # GEMINI_API_KEY (and optional GEMINI_MODEL) from .env
 cv2.setNumThreads(4)
@@ -59,16 +62,18 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 LOOK_WIDTH = 1024                   # frames are sent this wide (JPEG): plenty for Gemini, small upload
 LOOK_PROMPT = (
     "Find every distinct object and every person in this image. For each give: a short common "
-    "lowercase name; its box as [ymin, xmin, ymax, xmax] scaled 0-1000; where it is relative to "
+    "lowercase name; its type (one of: {types}); its box as [ymin, xmin, ymax, xmax] scaled "
+    "0-1000; where it is relative to "
     "nearby things in under 12 words, starting with 'on', 'in' or 'next to'; and movable: true if "
     "it's a small thing someone could put down and lose (phone, keys, mug, glasses, remote), false "
     "for people, furniture, walls, lights and fixtures. {reuse}")
 LOOK_SCHEMA = {"type": "array", "items": {"type": "object", "properties": {
     "label": {"type": "string"},
+    "type": {"type": "string", "enum": TYPES},
     "box_2d": {"type": "array", "items": {"type": "integer"}},
     "place": {"type": "string"},
     "movable": {"type": "boolean"}},
-    "required": ["label", "box_2d", "place", "movable"]}}
+    "required": ["label", "type", "box_2d", "place", "movable"]}}
 QUESTION_PROMPT = (
     "This is a recording of someone talking to a home camera that finds objects. "
     "Things it has seen: {known}. In view right now: {visible}. "
@@ -87,14 +92,8 @@ RECHECK_SECONDS = 6.0               # look again this soon when an item has just
 HEARTBEAT_SECONDS = 60.0            # look anyway this often
 QUOTA_WAIT_SECONDS = 60.0           # after a "too many requests" reply, wait this long
 
-# --- frame clean-up ---
+# --- camera ---
 WORK_WIDTH = 1280                   # full 720p: shown and cleaned at the camera's own resolution
-STILL_WEIGHT = 0.2                  # still pixels: newest frame counts 20% (averages ~5 frames of grain away)
-MOVING_DIFF = 20                    # a pixel that changed more than this (grey levels) really moved: no averaging, no smear
-CONTRAST_LIMIT = 1.5                # local contrast boost; higher also boosts leftover grain
-SHARPEN = 0.5                       # how much real edges are sharpened
-SHARPEN_ABOVE = 6                   # detail weaker than this (grey levels) is grain: not sharpened
-TARGET_BRIGHTNESS = 120             # darker frames get their shadows lifted
 CAMERA_BRIGHTNESS = (64, 192)       # range the auto-brightness may move the camera's own setting in
 
 # --- memory rules ---
@@ -137,46 +136,6 @@ def open_camera(source):
     for _ in range(10):                                  # first frames are often dark
         cam.read()
     return cam
-
-
-class Enhancer:
-    """Cleans each frame without blurring it.
-
-    Noise: each pixel is averaged over time only while it stays still. A pixel
-    that really changes (a hand, an object moving) takes the new frame at once,
-    so nothing smears, and there's no spatial blur to soften edges.
-    Light: shadows are lifted if the frame is dark, local contrast is boosted,
-    and a light sharpening pass keeps edges crisp.
-    """
-
-    def __init__(self):
-        self.avg = None
-        self.clahe = cv2.createCLAHE(clipLimit=CONTRAST_LIMIT, tileGridSize=(8, 8))
-        self.dot = np.ones((3, 3), np.uint8)
-        self.pad = np.ones((5, 5), np.uint8)
-
-    def __call__(self, frame):
-        if self.avg is None or self.avg.shape != frame.shape:
-            self.avg = frame.astype(np.float32)
-        else:
-            change = cv2.cvtColor(cv2.absdiff(frame, cv2.convertScaleAbs(self.avg)), cv2.COLOR_BGR2GRAY)
-            moved = (change >= MOVING_DIFF).astype(np.uint8)
-            # real movement is a blob (a hand); noise is lone dots: drop the dots, pad the blobs' edges
-            moved = cv2.dilate(cv2.morphologyEx(moved, cv2.MORPH_OPEN, self.dot), self.pad)
-            cv2.accumulateWeighted(frame, self.avg, STILL_WEIGHT, mask=1 - moved)   # still: average grain away
-            cv2.accumulateWeighted(frame, self.avg, 1.0, mask=moved)                # moved: take it as it is now
-        img = cv2.convertScaleAbs(self.avg)
-        l, a, b = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2LAB))
-        mean = float(l.mean())
-        if mean < TARGET_BRIGHTNESS - 20:                    # too dark: lift the shadows
-            gamma = np.log(TARGET_BRIGHTNESS / 255) / np.log(max(mean, 1.0) / 255)
-            l = cv2.LUT(l, (((np.arange(256) / 255) ** gamma) * 255).astype(np.uint8))
-        l = self.clahe.apply(l)                              # local contrast: edges stand out
-        # sharpen real edges only: flat areas (walls, table) are left alone so grain isn't boosted
-        soft = cv2.GaussianBlur(l, (0, 0), 1.2)
-        edges = cv2.compare(cv2.absdiff(l, soft), SHARPEN_ABOVE, cv2.CMP_GE)
-        cv2.copyTo(cv2.addWeighted(l, 1 + SHARPEN, soft, -SHARPEN, 0), edges, l)
-        return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
 
 
 def to_work_size(frame):
@@ -266,31 +225,22 @@ def gemini_error(e):
     return f"couldn't reach Gemini ({type(e).__name__})"   # network errors and anything else
 
 
-def look(client, frame, known):
-    """One Gemini request: every object and person in the frame, in frame pixels."""
+def look(client, frame, known, previous):
+    """One Gemini request: every object and person in the frame, cleaned, in frame pixels."""
     h, w = frame.shape[:2]
     small = cv2.resize(frame, (LOOK_WIDTH, int(h * LOOK_WIDTH / w)), interpolation=cv2.INTER_AREA)
     jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
     reuse = f"Use these names again for the same kinds of thing: {', '.join(known)}." if known else ""
     response = client.models.generate_content(
         model=GEMINI_MODEL,
-        contents=[types.Part.from_bytes(data=jpg, mime_type="image/jpeg"), LOOK_PROMPT.format(reuse=reuse)],
+        contents=[types.Part.from_bytes(data=jpg, mime_type="image/jpeg"),
+                  LOOK_PROMPT.format(types=", ".join(TYPES), reuse=reuse)],
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LOOK_SCHEMA))
-    found = []
-    for o in json.loads(response.text or "[]"):
-        box = o.get("box_2d") or []
-        if len(box) != 4:
-            continue
-        y1, x1, y2, x2 = box
-        x1, x2 = sorted((int(x1 * w / 1000), int(x2 * w / 1000)))
-        y1, y2 = sorted((int(y1 * h / 1000), int(y2 * h / 1000)))
-        if x2 - x1 < 4 or y2 - y1 < 4:
-            continue
-        place = o.get("place", "").strip().rstrip(".")
-        found.append(dict(box=(max(0, x1), max(0, y1), min(w, x2), min(h, y2)),
-                          name=o.get("label", "thing").strip().lower(),
-                          place=place[:1].lower() + place[1:], movable=bool(o.get("movable"))))
-    return found
+    try:
+        raw = json.loads(response.text or "[]")
+    except json.JSONDecodeError:
+        raw = []                                         # cut-off or garbled reply: treat as nothing seen
+    return clean_detections(raw, w, h, previous)
 
 
 class Looker(threading.Thread):
@@ -317,7 +267,7 @@ class Looker(threading.Thread):
             self.wanted.clear()
             frame, t0 = self.frame, time.monotonic()
             try:
-                objects = look(self.client, frame, self.known[-40:])
+                objects = look(self.client, frame, self.known[-40:], self.objects)
                 self.problem = ""
             except Exception as e:
                 self.problem = gemini_error(e)
@@ -331,9 +281,9 @@ class Looker(threading.Thread):
                 if o["name"] not in self.known:
                     self.known.append(o["name"])
             log(f"look {self.count} ({time.monotonic() - t0:.1f} s): "
-                + (", ".join(o["name"] for o in objects) or "nothing"))
+                + (", ".join(f"{o['name']} ({o['type']})" for o in objects) or "nothing"))
             now = time.time()
-            self.announcer.update([o["name"] for o in objects])
+            self.announcer.update(objects)
             self.unsure = self.memory.update(frame, objects, now)
             self.last, self.busy = time.monotonic(), False
 
@@ -376,16 +326,29 @@ class Announcer:
     def __init__(self, speaker):
         self.speaker, self.in_view, self.said = speaker, set(), {}
 
-    def update(self, names):
+    def update(self, objects):
         now = time.monotonic()
-        for name in sorted(set(names) - self.in_view):   # new since the last look
+        kinds = {o["name"]: o["type"] for o in objects}
+        for name in sorted(set(kinds) - self.in_view):   # new since the last look
             if now - self.said.get(name, -1e9) > ANNOUNCE_COOLDOWN:
                 self.said[name] = now
-                self.speaker.say(name)
-        self.in_view = set(names)
+                self.speaker.say(name if kinds[name] in ("person", "other") else f"{name}, {kinds[name]}")
+        self.in_view = set(kinds)
 
 
 # ---------- voice in ----------
+
+def spoken_by_type(objects):
+    """[mug, phone, laptop, person] -> "a phone and a laptop (electronics), a mug (kitchenware) and a person"."""
+    groups = {}
+    for o in objects:
+        groups.setdefault(o["type"], [])
+        if o["name"] not in groups[o["type"]]:
+            groups[o["type"]].append(o["name"])
+    parts = [spoken_list(names) + ("" if kind in ("person", "other") else f" ({kind})")
+             for kind, names in groups.items()]
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
 
 def spoken_list(names):
     """["cup", "apple", "person"] -> "a cup, an apple and a person"."""
@@ -401,6 +364,7 @@ class Listener(threading.Thread):
         self.gemini, self.speaker, self.looker = gemini, speaker, looker
         self.min_threshold, self.noise, self.level = threshold, 30.0, 0
         self.last_ask = 0.0
+        self.quiet = []                                  # recent blocks with nobody talking: the room's noise
 
     def run(self):
         block = int(SAMPLE_RATE * BLOCK_SECONDS)
@@ -429,6 +393,7 @@ class Listener(threading.Thread):
                     silent += BLOCK_SECONDS
                 else:
                     self.noise = 0.95 * self.noise + 0.05 * self.level   # learn the room's hum
+                    self.quiet = (self.quiet + [audio.copy()])[-15:]     # last 1.5 s of quiet
                 length = len(chunks) * BLOCK_SECONDS
                 if talking and (silent >= END_SILENCE_SECONDS or length >= MAX_SPEECH_SECONDS):
                     if length - silent >= MIN_SPEECH_SECONDS and \
@@ -439,6 +404,9 @@ class Listener(threading.Thread):
                     chunks, silent, talking = [], 0.0, False
 
     def handle(self, recording):
+        quiet = np.concatenate(self.quiet)[:, 0] if self.quiet else None
+        recording = clean_audio(recording[:, 0] if recording.ndim > 1 else recording,
+                                SAMPLE_RATE, noise_profile(quiet))
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
             w.setnchannels(1)
@@ -446,6 +414,7 @@ class Listener(threading.Thread):
             w.setframerate(SAMPLE_RATE)
             w.writeframes(recording.tobytes())
         visible = sorted({o["name"] for o in self.looker.objects})
+        seen_now = list(self.looker.objects)
         known = [n for n in self.looker.known if n != "person"]
         prompt = QUESTION_PROMPT.format(known=", ".join(known) or "nothing yet",
                                         visible=", ".join(visible) or "nothing")
@@ -461,14 +430,15 @@ class Listener(threading.Thread):
         heard, item = reply.get("heard", ""), str(reply.get("item", "NONE")).strip().lower()
         log(f"  heard: {heard!r} -> {item}")
         if item == "everything":
-            self.speaker.say(f"I can see {spoken_list(visible)}." if visible else "I can't see anything right now.")
+            self.speaker.say(f"I can see {spoken_by_type(seen_now)}." if seen_now else "I can't see anything right now.")
         elif item and item != "none":
             self.speaker.say(self.where_is(item))
 
     def where_is(self, item):
         now_seen = next((o for o in self.looker.objects if o["name"] == item), None)
         if now_seen:
-            return f"Your {item} is {now_seen['place']}. I can see it right now."
+            kind = "" if now_seen["type"] in ("person", "other") else f" ({now_seen['type']})"
+            return f"Your {item}{kind} is {now_seen['place']}. I can see it right now."
         con = db.open_db()
         row = next((r for r in db.latest_rows(con) if r["item"] == item), None)
         con.close()
@@ -528,9 +498,9 @@ class Memory:
             if s["present"] and zone == s["zone"]:
                 s["box"] = o["box"]
                 continue
-            s.update(present=True, zone=zone, box=o["box"], touched=False)
+            s.update(present=True, zone=zone, box=o["box"], touched=False, type=o["type"])
             event_id = self._log(name, "placed", zone, o["box"], now,
-                                 self._snapshot(frame, name, o["box"], people, now))
+                                 self._snapshot(frame, name, o["box"], people, now), kind=o["type"])
             if o["place"]:
                 db.set_description(self.db, event_id, o["place"])
 
@@ -545,7 +515,7 @@ class Memory:
                 unsure = True
                 continue
             s.update(present=False, misses=0)
-            self._log(name, "gone", s["zone"], s["box"], now, None, s["touched"])
+            self._log(name, "gone", s["zone"], s["box"], now, None, s["touched"], s.get("type"))
         return unsure
 
     def _snapshot(self, frame, name, box, people, now):
@@ -558,8 +528,8 @@ class Memory:
         cv2.imwrite(path, img)
         return path
 
-    def _log(self, item, event, zone, box, at, image, picked_up=False):
-        event_id = db.log_event(self.db, item, event, zone, box, at, image, picked_up)
+    def _log(self, item, event, zone, box, at, image, picked_up=False, kind=None):
+        event_id = db.log_event(self.db, item, event, zone, box, at, image, picked_up, kind)
         log(f"{time.strftime('%H:%M:%S', time.localtime(at))}  {item} {event}"
             + (" (picked up)" if picked_up else ""))
         return event_id
@@ -575,12 +545,21 @@ def label(frame, text, x, y, colour):
     cv2.putText(frame, text, (x + 4, y - base - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (20, 20, 20), 1, cv2.LINE_AA)
 
 
+TYPE_COLOURS = {                    # BGR, one colour per type so kinds stand apart at a glance
+    "person": (80, 200, 80), "animal": (60, 140, 220), "electronics": (230, 160, 40),
+    "kitchenware": (0, 165, 255), "food & drink": (60, 200, 250), "furniture": (150, 120, 90),
+    "clothing & accessories": (200, 100, 220), "personal care": (180, 180, 250),
+    "stationery & books": (240, 220, 120), "toys & games": (100, 100, 255), "tools": (160, 160, 160),
+    "plants": (60, 170, 60), "decor": (200, 200, 120), "fixtures": (190, 190, 190),
+    "vehicles": (90, 90, 200), "other": (220, 220, 220)}
+
+
 def draw(frame, objects, status):
     for o in objects:
         x1, y1, x2, y2 = o["box"]
-        colour = (80, 200, 80) if o["name"] == "person" else (0, 165, 255)
+        colour = TYPE_COLOURS.get(o["type"], (220, 220, 220))
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2, cv2.LINE_AA)
-        label(frame, o["name"], x1, y1, colour)
+        label(frame, o["name"] if o["type"] == "person" else f"{o['name']} | {o['type']}", x1, y1, colour)
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 30), (0, 0, 0), -1)
     cv2.putText(frame, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
     return frame
@@ -629,7 +608,8 @@ def main():
     is_file = not isinstance(source, int)
     brightness = AutoBrightness(cam) if not is_file else None
     print("Running. Rewind looks when something changes and says what it sees. Q in the window to quit.")
-    enhancer, gate = Enhancer(), ChangeGate()
+    enhancer, gate, check = Enhancer(), ChangeGate(), FrameCheck()
+    usable, frame_problem = True, ""
     frame_gap = 1 / (cam.get(cv2.CAP_PROP_FPS) or 30) if is_file else 0
     show_enhanced, look_now = True, False
     fps, fps_frames, fps_t0 = 0.0, 0, time.monotonic()
@@ -658,13 +638,17 @@ def main():
                or (looker.unsure and now - looker.last >= RECHECK_SECONDS)
                or now - looker.last >= HEARTBEAT_SECONDS)
         if due and gate.settled(now) and looker.ready(now):
-            looker.request(clean.copy())
-            gate.looked()
-            looker.unsure = look_now = False
+            usable, frame_problem = check(raw)           # don't spend a look on a bad frame
+            if usable:
+                looker.request(clean.copy())
+                gate.looked()
+                looker.unsure = look_now = False
 
         if not args.no_window:
             if looker.problem:
                 state = f"Gemini: {looker.problem}"
+            elif not usable and due:
+                state = f"waiting: {frame_problem}"
             elif looker.busy:
                 state = "looking..."
             elif gate.pending:

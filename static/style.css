@@ -15,3 +15,4 @@ h1 { font-size: 2.4rem; margin: 0 0 16px; }
 .tile img { width: 100%; border-radius: 10px; display: block; }
 .tile h2 { font-size: 1.6rem; margin: 8px 0 4px; text-transform: capitalize; }
 .tile p { font-size: 1.2rem; margin: 0; }
+.tile .kind { font-size: 1rem; color: #555; text-transform: capitalize; margin-bottom: 4px; }
