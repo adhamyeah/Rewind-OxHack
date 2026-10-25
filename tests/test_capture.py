@@ -32,3 +32,8 @@ def test_keyframe_fires_when_still_or_after_a_long_unsettled_spell():
     assert not should_fire_keyframe(True, 0.2, 1.0)                        # moving, only just started
     assert should_fire_keyframe(True, config.SETTLE_SECONDS, 1.0)          # went still
     assert should_fire_keyframe(True, 0.1, config.MAX_MOTION_WAIT)         # never still (moving face): fire anyway
+
+
+def test_yolo_does_not_guess_wallets_but_gemini_still_looks_for_them():
+    assert "wallet" not in config.YOLO_ITEMS
+    assert "wallet" in config.ITEMS and "wallet" in config.GEMINI_PROMPT

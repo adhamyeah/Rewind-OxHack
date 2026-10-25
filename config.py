@@ -43,9 +43,11 @@ PLURAL_ITEMS = {"keys", "glasses", "headphones"}
 MODEL = "yolov8m-worldv2.pt"
 IMGSZ = 640
 CONFIDENCE = 0.15
-# What the fast YOLO model looks for. No "remote control": YOLO kept putting that name on water
-# bottles and phones. Gemini still looks for every item in ITEMS, so a real remote is still found.
-YOLO_ITEMS = [item for item in ITEMS if item != "remote control"]
+# What the fast YOLO model looks for. Not "remote control" or "wallet": YOLO kept putting those names
+# on water bottles and phones (a flat black phone looks like a wallet). Gemini still looks for every
+# item in ITEMS, so a real remote or wallet is still found.
+YOLO_SKIP = {"remote control", "wallet"}
+YOLO_ITEMS = [item for item in ITEMS if item not in YOLO_SKIP]
 SAME_OBJECT_IOU = 0.7       # two YOLO labels on (almost) the same box = one object; keep the stronger label
 
 # --- people (separate model) ---
