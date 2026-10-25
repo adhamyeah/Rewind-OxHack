@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# CLIP text encoder, downloaded automatically on first run (338 MB, over GitHub's 100 MB limit)
+weights/
