@@ -1,14 +1,16 @@
 """
 Rewind - Ctrl+Z for the physical world.
 
-Trackbar 0..n-1 = keyframes (the table's history), n = LIVE.
-Type a question in the terminal ("where are my keys?"); the window jumps to that moment.
-Keys: , = back one keyframe, . = forward, l = live, q = quit.
+Default: a web page on http://127.0.0.1:8000 with the live view, a slider through the table's
+history (0..n-1 = keyframes, n = LIVE) and a box to ask "where are my keys?".
+`--window` uses the old OpenCV window instead (trackbar, keys , . l q).
+You can also type questions in the terminal either way.
 """
 
 import argparse
 import threading
 import time
+import webbrowser
 
 import cv2
 
@@ -21,6 +23,7 @@ from knob import Knob
 from live_detector import LiveDetector, pick_device
 from memory import Memory
 from store import Store
+from web import App, start_server
 
 
 def terminal_questions(answerer):
@@ -40,6 +43,9 @@ def main():
     ap.add_argument("--no-gemini", action="store_true", help="use YOLO boxes for memory, skip Gemini")
     ap.add_argument("--knob", default="", help="serial port of the potentiometer, e.g. /dev/cu.usbmodem1101")
     ap.add_argument("--seconds", type=float, default=0, help="stop after this many seconds (0 = until q)")
+    ap.add_argument("--window", action="store_true", help="use the old OpenCV window instead of the web page")
+    ap.add_argument("--port", type=int, default=8000, help="port for the web page")
+    ap.add_argument("--no-browser", action="store_true", help="don't open the web page automatically")
     args = ap.parse_args()
 
     use_gemini = not args.no_gemini and bool(config.GEMINI_API_KEY)
@@ -65,6 +71,40 @@ def main():
     answerer = Answerer(memory, ui_state, ready=memory_ready)
     threading.Thread(target=terminal_questions, args=(answerer,), daemon=True).start()
 
+    if args.window:
+        window_loop(args, memory, ui_state, worker, cam, det, knob)
+    else:
+        web_loop(args, memory, ui_state, worker, cam, det, answerer, use_gemini)
+
+
+def web_loop(args, memory, ui_state, worker, cam, det, answerer, use_gemini):
+    app = App(memory, ui_state, cam, det, worker, answerer, use_gemini)
+    try:
+        server, url = start_server(app, args.port)
+    except OSError as e:
+        print(f"[rewind] could not start the web page on port {args.port}: {e}\n"
+              f"[rewind] try --port {args.port + 1}, or use --window")
+        det.stop(), cam.stop(), worker.stop()
+        return
+    print(f"[rewind] open {url}   (Ctrl+C to quit)")
+    if not args.no_browser:
+        webbrowser.open(url)
+    started = time.perf_counter()
+    try:
+        while not cam.ended:
+            time.sleep(0.2)
+            if args.seconds and time.perf_counter() - started > args.seconds:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        det.stop()
+        cam.stop()
+        worker.stop()
+
+
+def window_loop(args, memory, ui_state, worker, cam, det, knob):
     cv2.namedWindow(config.WINDOW, cv2.WINDOW_NORMAL)
     cv2.createTrackbar("time", config.WINDOW, 0, 1, lambda v: None)
     position = 0          # trackbar position; == len(keyframes) means LIVE

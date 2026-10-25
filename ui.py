@@ -69,6 +69,15 @@ class UIState:
             j, self._jump = self._jump, None
             return j
 
+    def take_web_jump(self):
+        """Web page: the pending jump as a dict (keyframe, label, caption) once, then None."""
+        with self.lock:
+            j, self._jump = self._jump, None
+            if j is None:
+                return None
+            label = self._highlight[1] if self._highlight else ""
+            return {"keyframe": j, "label": label, "caption": self.caption}
+
     @property
     def highlight(self):
         with self.lock:

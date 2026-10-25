@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rewind</title>
+<style>
+  :root {
+    --bg: #f6f4ef; --card: #ffffff; --ink: #1b1a17; --muted: #6f6b61; --line: #e4e0d6;
+    --accent: #e0a100; --accent-ink: #1b1a17; --live: #d6372b; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12110f; --card: #1c1b18; --ink: #f2efe6; --muted: #9b968a; --line: #2e2c27;
+      --accent: #ffd24a; --live: #ff5a4d; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12110f; --card: #1c1b18; --ink: #f2efe6; --muted: #9b968a; --line: #2e2c27;
+    --accent: #ffd24a; --live: #ff5a4d; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 16px 48px; }
+
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  h1 { margin: 0; font-size: clamp(3rem, 9vw, 5.5rem); line-height: .95; font-weight: 800; letter-spacing: -.04em; }
+  h1 .arrow { color: var(--accent); }
+  .tag { margin: 8px 0 0; color: var(--muted); font-size: 1.05rem; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+          background: var(--card); border: 1px solid var(--line); font-weight: 600; font-size: .9rem; box-shadow: var(--shadow); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--live); animation: pulse 1.6s infinite; }
+  .pill.rewind .dot { background: var(--accent); animation: none; }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+  .card h2 { margin: 0 0 10px; font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 700; }
+  .pad { padding: 18px; }
+
+  .screen { position: relative; background: #000; aspect-ratio: 16 / 9; }
+  .screen img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .caption { position: absolute; left: 12px; right: 12px; bottom: 12px; padding: 10px 14px; border-radius: 12px;
+             background: rgba(0,0,0,.72); color: #ffd24a; font-weight: 600; backdrop-filter: blur(6px); }
+  .caption[hidden] { display: none; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: #aaa; text-align: center; padding: 20px; }
+
+  .scrub { padding: 18px; }
+  .scrub-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  .when { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .when small { color: var(--muted); font-weight: 500; font-size: .9rem; margin-left: 8px; }
+  input[type=range] { width: 100%; height: 34px; background: transparent; accent-color: var(--accent); cursor: pointer; }
+  .ends { display: flex; justify-content: space-between; color: var(--muted); font-size: .8rem; }
+  .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+           padding: 8px 14px; font-weight: 600; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  form.ask { display: flex; gap: 8px; }
+  form.ask input { flex: 1; min-width: 0; font: inherit; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--line);
+                   background: var(--bg); color: var(--ink); }
+  .answer { margin-top: 14px; padding: 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); min-height: 3.2em; }
+  .answer.busy { color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 5px 12px; border-radius: 999px; font-size: .9rem; }
+  .muted { color: var(--muted); }
+  ul.events { list-style: none; margin: 0; padding: 0; }
+  ul.events li { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+  ul.events li:first-child { border-top: 0; }
+  ul.events button { padding: 2px 10px; font-size: .85rem; }
+  .kind { font-weight: 700; }
+  .kind.appeared { color: #2f9e57; } .kind.left { color: var(--live); } .kind.moved { color: #3b7dd8; }
+  .stack > * + * { margin-top: 20px; }
+  footer { margin-top: 22px; color: var(--muted); font-size: .85rem; display: flex; gap: 16px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Rewind<span class="arrow">&#8630;</span></h1>
+      <p class="tag">Ctrl+Z for the physical world. Ask where something went, then watch the table rewind.</p>
+    </div>
+    <div class="pill" id="mode"><span class="dot"></span><span id="modeText">LIVE</span></div>
+  </header>
+
+  <div class="grid">
+    <div class="stack">
+      <div class="card">
+        <div class="screen">
+          <img id="view" alt="Camera view of the table">
+          <div class="caption" id="caption" hidden></div>
+        </div>
+        <div class="scrub">
+          <div class="scrub-top">
+            <div class="when" id="when">Live<small id="ago"></small></div>
+            <div class="muted" id="count"></div>
+          </div>
+          <input type="range" id="slider" min="0" max="0" value="0" step="1" aria-label="Scrub through the table's history">
+          <div class="ends"><span>Earliest</span><span>Now</span></div>
+          <div class="btns">
+            <button id="back" title="Left arrow">&#9664; Back</button>
+            <button id="fwd" title="Right arrow">Forward &#9654;</button>
+            <button id="live" class="primary" title="L">Back to live</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="card pad">
+        <h2>Ask Rewind</h2>
+        <form class="ask" id="askForm">
+          <input id="q" autocomplete="off" placeholder="Where are my keys?" aria-label="Your question">
+          <button class="primary" type="submit">Ask</button>
+        </form>
+        <div class="answer" id="answer">Ask about anything on the table. Rewind answers out loud and jumps to the moment it was last seen.</div>
+      </div>
+
+      <div class="card pad">
+        <h2>On the table now</h2>
+        <div class="chips" id="present"><span class="muted">Nothing yet</span></div>
+      </div>
+
+      <div class="card pad">
+        <h2>What changed</h2>
+        <ul class="events" id="events"><li class="muted">Waiting for the first change&hellip;</li></ul>
+      </div>
+    </div>
+  </div>
+
+  <footer><span id="statusMemory"></span><span id="statusLive"></span></footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const view = $("view"), slider = $("slider");
+let state = { keyframes: [], present: [], events: [], now: Date.now() / 1000 };
+let pos = 0;              // slider position; equals keyframes.length when LIVE
+let live = true;
+let highlight = "";       // item to outline in the shown keyframe
+let shown = "";           // what the <img> currently displays, to avoid reloading the same thing
+
+const n = () => state.keyframes.length;
+
+function ago(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 5) return "just now";
+  if (sec < 60) return sec + " seconds ago";
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + " minute" + (m === 1 ? "" : "s") + " ago";
+  const h = Math.floor(m / 60);
+  return h + " hour" + (h === 1 ? "" : "s") + " ago";
+}
+
+function show() {
+  const total = n();
+  slider.max = total;
+  if (live) pos = total;
+  pos = Math.min(pos, total);
+  slider.value = pos;
+  slider.disabled = total === 0;
+
+  const isLive = live || pos >= total;
+  const src = isLive ? "/stream.mjpg" : "/frame/" + pos + ".jpg" + (highlight ? "?hl=" + encodeURIComponent(highlight) : "");
+  if (src !== shown) { view.src = src; shown = src; }
+
+  $("mode").className = "pill" + (isLive ? "" : " rewind");
+  $("modeText").textContent = isLive ? "LIVE" : "REWIND";
+  if (isLive) {
+    $("when").firstChild.textContent = "Live";
+    $("ago").textContent = "";
+    $("caption").hidden = true;
+  } else {
+    const k = state.keyframes[pos];
+    $("when").firstChild.textContent = k.time;
+    $("ago").textContent = ago(state.now - k.t);
+  }
+  $("count").textContent = total ? (isLive ? total + " moments saved" : "Moment " + (pos + 1) + " of " + total) : "No moments saved yet";
+}
+
+function goTo(index, label, caption) {
+  live = index >= n();
+  pos = index;
+  highlight = label || "";
+  if (caption) { $("caption").textContent = caption; $("caption").hidden = false; }
+  else $("caption").hidden = true;
+  show();
+}
+
+function renderLists() {
+  const present = $("present");
+  present.innerHTML = "";
+  if (!state.present.length) present.innerHTML = '<span class="muted">Nothing yet</span>';
+  state.present.forEach(label => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.textContent = label; b.title = "Where is the " + label + "?";
+    b.onclick = () => ask("Where is the " + label + "?");
+    present.appendChild(b);
+  });
+
+  const ul = $("events");
+  ul.innerHTML = "";
+  const evs = state.events.slice().reverse();
+  if (!evs.length) ul.innerHTML = '<li class="muted">Waiting for the first change&hellip;</li>';
+  evs.forEach(e => {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.innerHTML = '<span class="kind ' + e.kind + '">' + e.kind + "</span> &middot; ";
+    text.append(e.label + " ");
+    const when = document.createElement("span");
+    when.className = "muted"; when.textContent = ago(state.now - e.t);
+    text.appendChild(when);
+    const b = document.createElement("button");
+    b.textContent = "View"; b.onclick = () => goTo(e.keyframe, e.label, "");
+    li.append(text, b);
+    ul.appendChild(li);
+  });
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state");
+    state = await r.json();
+    const s = state.status;
+    $("statusMemory").textContent = "Memory: " + s.memory + (s.last !== "-" ? " (last: " + s.last + ")" : "") + (s.gemini ? "" : " · Gemini off");
+    $("statusLive").textContent = "Live detection " + s.live_ms + " ms";
+    renderLists();
+    if (state.jump) goTo(state.jump.keyframe, state.jump.label, state.jump.caption);
+    else show();
+  } catch (e) { /* server busy or restarting: try again next tick */ }
+}
+
+async function ask(question) {
+  const box = $("answer");
+  box.className = "answer busy"; box.textContent = "Thinking…";
+  try {
+    const r = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+    const data = await r.json();
+    box.className = "answer"; box.textContent = data.text || data.error || "No answer";
+    if (data.jump) { await poll(); goTo(data.jump.keyframe, data.jump.label, data.jump.caption); }
+  } catch (e) { box.className = "answer"; box.textContent = "Could not reach Rewind. Is it still running?"; }
+}
+
+$("askForm").onsubmit = ev => { ev.preventDefault(); const q = $("q").value.trim(); if (q) { ask(q); $("q").value = ""; } };
+slider.oninput = () => { goTo(+slider.value, "", ""); };
+$("back").onclick = () => goTo(Math.max(0, pos - 1), "", "");
+$("fwd").onclick = () => goTo(Math.min(n(), pos + 1), "", "");
+$("live").onclick = () => goTo(n(), "", "");
+document.addEventListener("keydown", ev => {
+  if (ev.target.tagName === "INPUT" && ev.target.type === "text") return;
+  if (ev.key === "ArrowLeft") $("back").click();
+  else if (ev.key === "ArrowRight") $("fwd").click();
+  else if (ev.key === "l" || ev.key === "L") $("live").click();
+});
+
+poll(); setInterval(poll, 700);
+</script>
+</body>
+</html>

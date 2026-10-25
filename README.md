@@ -45,7 +45,24 @@ curl -L -o yolov8s-worldv2.pt https://github.com/ultralytics/assets/releases/dow
 ## Run
 
 ```bash
-python phase1_camera_gate.py    # Q to quit
+python rewind.py --source 1     # camera index; opens http://127.0.0.1:8000 in your browser
+```
+
+The page has the live view, a slider through the table's history, and a box to ask
+"where are my keys?". Questions typed in the terminal work too.
+
+Options: `--port 8001` (if 8000 is busy), `--no-browser`, `--no-gemini` (YOLO only),
+`--window` (the old OpenCV window instead of the web page: `,` `.` `l` `q` keys).
+Only your own computer can open the page (it listens on 127.0.0.1).
+
+Secrets: copy `.env.example` to `.env` and fill it in (never commit `.env`).
+`python doctor.py --network` checks your setup.
+
+If the CLIP text model download fails with an SSL error (some venue Wi-Fi), fetch it with curl:
+
+```bash
+mkdir -p weights/clip
+curl -L -o weights/clip/ViT-B-32.pt https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt
 ```
 
 VSCode: Command Palette -> "Python: Select Interpreter" -> pick the `.venv`
