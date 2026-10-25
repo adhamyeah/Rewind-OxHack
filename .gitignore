@@ -11,8 +11,4 @@ __pycache__/
 rewind.db*
 snapshots/
 
-# CLIP text encoder, downloaded automatically on first run (338 MB)
-weights/
 
-# standard YOLO model, downloads itself on first run
-yolo11s.pt

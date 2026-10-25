@@ -1,19 +1,23 @@
 """Rewind: watches the webcam, says what it sees, and remembers where things are put down.
 
-- Live window with boxes around every object and person YOLO knows (80 everyday
-  things: person, cell phone, cup, bottle, laptop, book, remote...).
-- Each frame is cleaned up before detection without blurring: still pixels are
-  averaged over time to remove sensor grain (moving ones aren't, so nothing
-  smears), dark frames are brightened, contrast is boosted, edges sharpened.
-- Says the name of each thing as it comes into view ("cup", "person").
-- Listens to the microphone: ask "where is my phone?" or "what can you see?".
-- When an item settles somewhere it's logged to rewind.db with a photo
-  (people blurred), and Gemini describes the spot ("next to the blue mug").
+Gemini does all the seeing. There's no local detection model: each "look" sends
+one cleaned-up frame to Gemini, which returns every object and person with a box,
+a name and where it is ("next to the blue mug").
 
-Run:  python main.py                          (Q quit, E toggle enhanced view)
+Looks cost quota (free keys get a few hundred a day), so Rewind only looks when
+the scene has changed and gone still again (a hand put something down and left),
+plus a slow check every minute. Between looks the boxes stay where they were.
+
+- Frames are cleaned up first without blurring: still pixels are averaged over
+  time to remove grain, dark frames brightened, contrast boosted, edges sharpened.
+- Says the name of each thing as it comes into view ("mug", "person").
+- Listens to the microphone: ask "where is my phone?" or "what can you see?".
+- Items that settle somewhere are logged to rewind.db with a photo (people
+  blurred) for the web page.
+
+Run:  python main.py                          (Q quit, E toggle enhanced view, SPACE look now)
       python main.py --source 1               (another camera)
       python main.py --source clip.mp4        (a video file)
-      python main.py --items "keys,glasses"   (things outside the library, via YOLO-World)
       python main.py --no-voice --no-mic
       python main.py --verbose                (also print what it sees and does)
 """
@@ -33,34 +37,57 @@ import cv2
 import numpy as np
 import pyttsx3
 import sounddevice as sd
-import torch
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors, types
-from ultralytics import YOLO, YOLOWorld
 
 import db
 
 load_dotenv()                       # GEMINI_API_KEY (and optional GEMINI_MODEL) from .env
-cv2.setNumThreads(4)                # ultralytics turns OpenCV threading off; frame clean-up needs it
-torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2 - 2))   # leave cores for video (30 fps vs 23)
-VERBOSE = False                     # --verbose: print every placed/gone/heard line, not just speak names
+cv2.setNumThreads(4)
+VERBOSE = False                     # --verbose: print every look/placed/gone/heard line, not just speak names
 
 
 def log(text):
     if VERBOSE:
         print(text)
 
-# --- detection ---
-MODEL = "yolo11s.pt"                # standard YOLO "library": 80 everyday things; downloads once (19 MB)
-OPEN_VOCAB_MODEL = "yolov8s-worldv2.pt"   # only with --items, for names outside the library
-CONFIDENCE = 0.45                   # below this a box is ignored (one-off mistakes were ~35-50%)
-MAX_DETECT_FPS = 8                  # leaves CPU for smooth video
-# seen and announced, but never logged as "put down somewhere"
-NOT_ITEMS = {"person", "dining table", "chair", "couch", "bed", "tv", "toilet", "sink",
-             "refrigerator", "oven", "bench", "potted plant"}
 
-# --- frame clean-up before detection ---
+# --- Gemini ---
+# flash-lite: ~2 s per look and a much bigger free daily quota than gemini-3.5-flash (20 a day)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+LOOK_WIDTH = 1024                   # frames are sent this wide (JPEG): plenty for Gemini, small upload
+LOOK_PROMPT = (
+    "Find every distinct object and every person in this image. For each give: a short common "
+    "lowercase name; its box as [ymin, xmin, ymax, xmax] scaled 0-1000; where it is relative to "
+    "nearby things in under 12 words, starting with 'on', 'in' or 'next to'; and movable: true if "
+    "it's a small thing someone could put down and lose (phone, keys, mug, glasses, remote), false "
+    "for people, furniture, walls, lights and fixtures. {reuse}")
+LOOK_SCHEMA = {"type": "array", "items": {"type": "object", "properties": {
+    "label": {"type": "string"},
+    "box_2d": {"type": "array", "items": {"type": "integer"}},
+    "place": {"type": "string"},
+    "movable": {"type": "boolean"}},
+    "required": ["label", "box_2d", "place", "movable"]}}
+QUESTION_PROMPT = (
+    "This is a recording of someone talking to a home camera that finds objects. "
+    "Things it has seen: {known}. In view right now: {visible}. "
+    'Reply as JSON: {{"heard": "<what they said>", "item": "<if they ask where something is: '
+    "the matching name from the seen list, or the plain name of the thing if it isn't there; "
+    'EVERYTHING if they ask what you can see; otherwise NONE>"}}')
+
+# --- when to look ---
+GATE_W, GATE_H = 320, 180           # change detection runs on this small greyscale image
+PIXEL_DIFF = 25                     # grey levels a pixel must change by to count as changed
+CHANGE_PCT = 0.5                    # % of pixels changed since the last look = "something happened"
+STILL_PCT = 0.3                     # % changing frame-to-frame below which the scene is still
+SETTLE_SECONDS = 0.8                # still this long = the hand has gone, look now
+MIN_GAP_SECONDS = 4.0               # never look more often than this
+RECHECK_SECONDS = 6.0               # look again this soon when an item has just gone missing
+HEARTBEAT_SECONDS = 60.0            # look anyway this often
+QUOTA_WAIT_SECONDS = 60.0           # after a "too many requests" reply, wait this long
+
+# --- frame clean-up ---
 WORK_WIDTH = 1280                   # full 720p: shown and cleaned at the camera's own resolution
 STILL_WEIGHT = 0.2                  # still pixels: newest frame counts 20% (averages ~5 frames of grain away)
 MOVING_DIFF = 20                    # a pixel that changed more than this (grey levels) really moved: no averaging, no smear
@@ -71,8 +98,7 @@ TARGET_BRIGHTNESS = 120             # darker frames get their shadows lifted
 CAMERA_BRIGHTNESS = (64, 192)       # range the auto-brightness may move the camera's own setting in
 
 # --- memory rules ---
-CONFIRM_PASSES = 4                  # same place this many detections in a row = put down
-GONE_AFTER = 4.0                    # unseen this many seconds = gone
+MISSES_FOR_GONE = 2                 # missing on 2 looks in a row = gone (one look can miss things)
 SNAP_DIR = "snapshots"
 KEEP_SNAPSHOTS_HOURS = 24
 
@@ -83,20 +109,7 @@ BLOCK_SECONDS = 0.1
 MIN_SPEECH_SECONDS = 0.4
 MAX_SPEECH_SECONDS = 8.0
 END_SILENCE_SECONDS = 0.8
-VOICE_GAP_SECONDS = 3.0           # at most one voice question per this many seconds (free Gemini keys allow ~10 a minute)
-
-# --- Gemini ---
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")   # override in .env
-DESCRIBE_PROMPT = (
-    "The {item} is inside the orange box. In under 15 words, say where it is relative to "
-    "nearby objects, as you would to an elderly person. Start with a word like 'on', 'in' "
-    "or 'next to'. Reply with the phrase only.")
-QUESTION_PROMPT = (
-    "This is a recording of someone talking to a home camera that finds objects. "
-    "Objects it knows: {known}. Objects in view right now: {visible}. "
-    'Reply as JSON: {{"heard": "<what they said>", "item": "<one exact name from the '
-    'known list if they ask where something is, EVERYTHING if they ask what you can see, '
-    'otherwise NONE>"}}')
+VOICE_GAP_SECONDS = 3.0             # at most one voice question per this many seconds (saves quota)
 
 
 # ---------- camera ----------
@@ -127,7 +140,7 @@ def open_camera(source):
 
 
 class Enhancer:
-    """Cleans each frame before detection without blurring it.
+    """Cleans each frame without blurring it.
 
     Noise: each pixel is averaged over time only while it stays still. A pixel
     that really changes (a hand, an object moving) takes the new frame at once,
@@ -173,43 +186,156 @@ def to_work_size(frame):
     return cv2.resize(frame, (WORK_WIDTH, int(h * WORK_WIDTH / w)), interpolation=cv2.INTER_AREA)
 
 
-# ---------- detection ----------
+class AutoBrightness:
+    """Nudges the camera's own brightness so the picture isn't washed out or murky.
 
-def pick_device():
-    if torch.cuda.is_available():
-        return "0"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    Your camera ignores exposure settings, but its brightness setting works:
+    lowering it cut blown-out highlights from 0.7% to 0.1% in testing.
+    The original value is put back when Rewind quits.
+    """
+
+    def __init__(self, cam):
+        self.cam, self.original = cam, cam.get(cv2.CAP_PROP_BRIGHTNESS)
+        self.value, self.next = self.original, 0.0
+        self.enabled = CAMERA_BRIGHTNESS[0] <= self.original <= CAMERA_BRIGHTNESS[1]
+
+    def update(self, frame, now):
+        if not self.enabled or now < self.next:
+            return
+        self.next = now + 0.5
+        grey = cv2.cvtColor(cv2.resize(frame, (160, 90)), cv2.COLOR_BGR2GRAY)
+        step = 0
+        if grey.mean() > 150 or (grey >= 250).mean() > 0.02:
+            step = -8                                    # washed out
+        elif grey.mean() < 90:
+            step = 8                                     # murky
+        if step:
+            self.value = min(max(self.value + step, CAMERA_BRIGHTNESS[0]), CAMERA_BRIGHTNESS[1])
+            self.cam.set(cv2.CAP_PROP_BRIGHTNESS, self.value)
+
+    def restore(self):
+        if self.enabled:
+            self.cam.set(cv2.CAP_PROP_BRIGHTNESS, self.original)
 
 
-def load_model(items):
-    """Standard YOLO knows 80 things; YOLO-World takes any names but is less reliable."""
-    if items:
-        model = YOLOWorld(OPEN_VOCAB_MODEL)
-        names = items + ["person"]
-        model.set_classes(names)
-        return model, names
-    model = YOLO(MODEL)
-    return model, [model.names[i] for i in sorted(model.names)]
+class ChangeGate:
+    """Decides when a look is worth a Gemini request: something changed, then went still."""
+
+    def __init__(self):
+        self.baseline = self.prev = None
+        self.still_since = time.monotonic()
+        self.pending = True                              # look once the first scene is still
+        self.change = 0.0
+
+    def update(self, frame, now):
+        gate = cv2.GaussianBlur(cv2.cvtColor(cv2.resize(frame, (GATE_W, GATE_H)), cv2.COLOR_BGR2GRAY), (9, 9), 0)
+        if self.baseline is None:
+            self.baseline = self.prev = gate
+        if changed_pct(self.prev, gate) > STILL_PCT:
+            self.still_since = now                       # something is moving: wait for it to stop
+        self.prev = gate
+        self.change = changed_pct(self.baseline, gate)
+        if self.change > CHANGE_PCT:
+            self.pending = True
+        elif not self.pending:
+            self.baseline = cv2.addWeighted(gate, 0.02, self.baseline, 0.98, 0)   # follow slow light changes
+
+    def settled(self, now):
+        return now - self.still_since >= SETTLE_SECONDS
+
+    def looked(self):
+        self.baseline, self.pending = self.prev, False
 
 
-def detect(model, frame, names, imgsz, device):
-    result = model.predict(frame, conf=CONFIDENCE, imgsz=imgsz, device=device, verbose=False)[0]
-    return [(int(x1), int(y1), int(x2), int(y2), names[int(c)], float(conf))
-            for (x1, y1, x2, y2), c, conf in zip(result.boxes.xyxy.tolist(),
-                                                 result.boxes.cls.tolist(),
-                                                 result.boxes.conf.tolist())]
+def changed_pct(a, b):
+    return float((cv2.absdiff(a, b) > PIXEL_DIFF).mean() * 100)
 
 
-def rough_place(box, width):
-    """Fallback place when Gemini isn't available: left / middle / right of the view."""
-    x = (box[0] + box[2]) / 2 / width
-    if x < 1 / 3:
-        return "on the left of the camera view"
-    if x < 2 / 3:
-        return "in the middle of the camera view"
-    return "on the right of the camera view"
+# ---------- seeing (Gemini) ----------
+
+def gemini_error(e):
+    if isinstance(e, errors.ClientError):
+        if e.code in (400, 401, 403) and "key" in str(e.message).lower():
+            return "the API key in .env was rejected"
+        if e.code == 429:
+            daily = "PerDay" in str(e.details)
+            return "daily limit reached" if daily else "too many requests this minute"
+        return f"request error {e.code} {e.message}"
+    if isinstance(e, errors.ServerError):
+        return f"server error {e.code}"
+    return f"couldn't reach Gemini ({type(e).__name__})"   # network errors and anything else
+
+
+def look(client, frame, known):
+    """One Gemini request: every object and person in the frame, in frame pixels."""
+    h, w = frame.shape[:2]
+    small = cv2.resize(frame, (LOOK_WIDTH, int(h * LOOK_WIDTH / w)), interpolation=cv2.INTER_AREA)
+    jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+    reuse = f"Use these names again for the same kinds of thing: {', '.join(known)}." if known else ""
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[types.Part.from_bytes(data=jpg, mime_type="image/jpeg"), LOOK_PROMPT.format(reuse=reuse)],
+        config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LOOK_SCHEMA))
+    found = []
+    for o in json.loads(response.text or "[]"):
+        box = o.get("box_2d") or []
+        if len(box) != 4:
+            continue
+        y1, x1, y2, x2 = box
+        x1, x2 = sorted((int(x1 * w / 1000), int(x2 * w / 1000)))
+        y1, y2 = sorted((int(y1 * h / 1000), int(y2 * h / 1000)))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            continue
+        place = o.get("place", "").strip().rstrip(".")
+        found.append(dict(box=(max(0, x1), max(0, y1), min(w, x2), min(h, y2)),
+                          name=o.get("label", "thing").strip().lower(),
+                          place=place[:1].lower() + place[1:], movable=bool(o.get("movable"))))
+    return found
+
+
+class Looker(threading.Thread):
+    """Sends a frame to Gemini whenever the main loop asks for a look, one at a time."""
+
+    def __init__(self, client, memory, announcer):
+        super().__init__(daemon=True)
+        self.client, self.memory, self.announcer = client, memory, announcer
+        self.frame, self.wanted = None, threading.Event()
+        self.objects, self.known = [], []                # latest look; every name seen so far
+        self.busy, self.last, self.count = False, 0.0, 0
+        self.blocked_until, self.problem, self.unsure = 0.0, "", False
+
+    def ready(self, now):
+        return not self.busy and now >= self.blocked_until and now - self.last >= MIN_GAP_SECONDS
+
+    def request(self, frame):
+        self.frame, self.busy = frame, True
+        self.wanted.set()
+
+    def run(self):
+        while True:
+            self.wanted.wait()
+            self.wanted.clear()
+            frame, t0 = self.frame, time.monotonic()
+            try:
+                objects = look(self.client, frame, self.known[-40:])
+                self.problem = ""
+            except Exception as e:
+                self.problem = gemini_error(e)
+                log(f"Gemini: {self.problem}")
+                if "daily" in self.problem or "minute" in self.problem:
+                    self.blocked_until = time.monotonic() + QUOTA_WAIT_SECONDS
+                self.last, self.busy = time.monotonic(), False
+                continue
+            self.objects, self.count = objects, self.count + 1
+            for o in objects:
+                if o["name"] not in self.known:
+                    self.known.append(o["name"])
+            log(f"look {self.count} ({time.monotonic() - t0:.1f} s): "
+                + (", ".join(o["name"] for o in objects) or "nothing"))
+            now = time.time()
+            self.announcer.update([o["name"] for o in objects])
+            self.unsure = self.memory.update(frame, objects, now)
+            self.last, self.busy = time.monotonic(), False
 
 
 # ---------- voice out ----------
@@ -245,59 +371,18 @@ class Speaker(threading.Thread):
 
 
 class Announcer:
-    """Says a thing's name when it comes into view, not again until it has left and come back."""
+    """Says a thing's name when it comes into view; not again until it has left and come back."""
 
     def __init__(self, speaker):
-        self.speaker, self.last_seen, self.streak, self.said = speaker, {}, {}, {}
+        self.speaker, self.in_view, self.said = speaker, set(), {}
 
-    def update(self, names, now):
-        for name in set(names):
-            back = now - self.last_seen.get(name, -1e9) < 1.5
-            self.streak[name] = self.streak.get(name, 0) + 1 if back else 1
-            self.last_seen[name] = now
-            # 3 detections in a row (~0.4 s) filters one-off mistakes
-            if self.streak[name] == 3 and now - self.said.get(name, -1e9) > ANNOUNCE_COOLDOWN:
+    def update(self, names):
+        now = time.monotonic()
+        for name in sorted(set(names) - self.in_view):   # new since the last look
+            if now - self.said.get(name, -1e9) > ANNOUNCE_COOLDOWN:
                 self.said[name] = now
                 self.speaker.say(name)
-
-
-# ---------- Gemini ----------
-
-def describe(client, image_path, item):
-    """One plain-English phrase about where the item is, from its snapshot. None on failure."""
-    with open(image_path, "rb") as f:
-        image = types.Part.from_bytes(data=f.read(), mime_type="image/jpeg")
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL, contents=[image, DESCRIBE_PROMPT.format(item=item)])
-    except Exception as e:
-        log(f"Gemini: {gemini_error(e)}; using the rough place")
-        return None
-    text = (response.text or "").strip().rstrip(".")   # empty if Gemini blocked the image
-    return text[:1].lower() + text[1:] or None         # it goes mid-sentence: "Your keys are on..."
-
-
-def gemini_error(e):
-    if isinstance(e, errors.ClientError):
-        if e.code in (400, 401, 403) and "key" in str(e.message).lower():
-            return "the API key in .env was rejected"
-        if e.code == 429:
-            return "rate limited"
-        return f"request error {e.code} {e.message}"
-    if isinstance(e, errors.ServerError):
-        return f"server error {e.code}"
-    return f"couldn't reach Gemini ({type(e).__name__})"   # network errors and anything else
-
-
-def describe_in_background(client, event_id, image_path, item):
-    def run():
-        phrase = describe(client, image_path, item)
-        if phrase:
-            con = db.open_db()               # own connection: sqlite objects stay in their thread
-            db.set_description(con, event_id, phrase)
-            con.close()
-            log(f"            Gemini: {item} {phrase}")
-    threading.Thread(target=run, daemon=True).start()
+        self.in_view = set(names)
 
 
 # ---------- voice in ----------
@@ -311,9 +396,9 @@ def spoken_list(names):
 class Listener(threading.Thread):
     """Waits for someone to speak, then asks Gemini what they want and answers out loud."""
 
-    def __init__(self, gemini, speaker, known, detector, threshold):
+    def __init__(self, gemini, speaker, looker, threshold):
         super().__init__(daemon=True)
-        self.gemini, self.speaker, self.known, self.detector = gemini, speaker, known, detector
+        self.gemini, self.speaker, self.looker = gemini, speaker, looker
         self.min_threshold, self.noise, self.level = threshold, 30.0, 0
         self.last_ask = 0.0
 
@@ -346,7 +431,8 @@ class Listener(threading.Thread):
                     self.noise = 0.95 * self.noise + 0.05 * self.level   # learn the room's hum
                 length = len(chunks) * BLOCK_SECONDS
                 if talking and (silent >= END_SILENCE_SECONDS or length >= MAX_SPEECH_SECONDS):
-                    if length - silent >= MIN_SPEECH_SECONDS and                             time.monotonic() - self.last_ask >= VOICE_GAP_SECONDS:
+                    if length - silent >= MIN_SPEECH_SECONDS and \
+                            time.monotonic() - self.last_ask >= VOICE_GAP_SECONDS:
                         self.last_ask = time.monotonic()
                         recording = np.concatenate(chunks)
                         threading.Thread(target=self.handle, args=(recording,), daemon=True).start()
@@ -359,8 +445,10 @@ class Listener(threading.Thread):
             w.setsampwidth(2)
             w.setframerate(SAMPLE_RATE)
             w.writeframes(recording.tobytes())
-        visible = sorted({d[4] for d in self.detector.dets})
-        prompt = QUESTION_PROMPT.format(known=", ".join(self.known), visible=", ".join(visible) or "nothing")
+        visible = sorted({o["name"] for o in self.looker.objects})
+        known = [n for n in self.looker.known if n != "person"]
+        prompt = QUESTION_PROMPT.format(known=", ".join(known) or "nothing yet",
+                                        visible=", ".join(visible) or "nothing")
         try:
             response = self.gemini.models.generate_content(
                 model=GEMINI_MODEL,
@@ -370,24 +458,21 @@ class Listener(threading.Thread):
         except Exception as e:
             log(f"Gemini (voice): {gemini_error(e)}")
             return
-        heard, item = reply.get("heard", ""), str(reply.get("item", "NONE")).strip()
+        heard, item = reply.get("heard", ""), str(reply.get("item", "NONE")).strip().lower()
         log(f"  heard: {heard!r} -> {item}")
-        if item.upper() == "EVERYTHING":
+        if item == "everything":
             self.speaker.say(f"I can see {spoken_list(visible)}." if visible else "I can't see anything right now.")
-        elif item in self.known:
-            self.speaker.say(self.where_is(item, visible))
+        elif item and item != "none":
+            self.speaker.say(self.where_is(item))
 
-    def where_is(self, item, visible):
+    def where_is(self, item):
+        now_seen = next((o for o in self.looker.objects if o["name"] == item), None)
+        if now_seen:
+            return f"Your {item} is {now_seen['place']}. I can see it right now."
         con = db.open_db()
         row = next((r for r in db.latest_rows(con) if r["item"] == item), None)
         con.close()
-        if row and row["event"] == "placed":
-            return db.answer(row)
-        if item in visible:
-            return f"I can see the {item} right now."
-        if row:
-            return db.answer(row)
-        return f"I haven't seen a {item} yet."
+        return db.answer(row) if row else f"I haven't seen a {item} yet."
 
 
 # ---------- memory: placed / gone ----------
@@ -397,11 +482,21 @@ def overlaps(a, b):
 
 
 def mostly_inside(box, outer, share=0.8):
-    """True if most of box lies within outer: a tie on a shirt, a "cat" that's really hair."""
+    """True if most of box lies within outer: a phone in a hand, earphones on a head."""
     w = min(box[2], outer[2]) - max(box[0], outer[0])
     h = min(box[3], outer[3]) - max(box[1], outer[1])
     area = (box[2] - box[0]) * (box[3] - box[1])
     return w > 0 and h > 0 and area > 0 and w * h / area >= share
+
+
+def rough_place(box, width):
+    """Which third of the view: used to notice an item moving to a new spot."""
+    x = (box[0] + box[2]) / 2 / width
+    if x < 1 / 3:
+        return "on the left of the camera view"
+    if x < 2 / 3:
+        return "in the middle of the camera view"
+    return "on the right of the camera view"
 
 
 def delete_old_snapshots():
@@ -412,125 +507,65 @@ def delete_old_snapshots():
 
 
 class Memory:
-    def __init__(self, con, gemini):
-        self.db, self.gemini, self.items = con, gemini, {}
+    """Logs movable things that settle somewhere ('placed') and that disappear ('gone')."""
+
+    def __init__(self, con):
+        self.db, self.items = con, {}
         os.makedirs(SNAP_DIR, exist_ok=True)
 
-    def update(self, frame, dets, now):
-        people = [d[:4] for d in dets if d[4] == "person"]
-        best = {}                                        # strongest box per item
-        for x1, y1, x2, y2, name, conf in dets:
-            box = (x1, y1, x2, y2)
-            if name in NOT_ITEMS or any(mostly_inside(box, p) for p in people):
-                continue                                 # worn or held, not put down
-            if conf > best.get(name, (0, None))[0]:
-                best[name] = (conf, box)
+    def update(self, frame, objects, now):
+        """One look. Returns True if an item just went missing and a re-check would help."""
+        people = [o["box"] for o in objects if o["name"] == "person"]
+        here = {}
+        for o in objects:
+            if o["movable"] and not any(mostly_inside(o["box"], p) for p in people):   # held items aren't put down
+                here.setdefault(o["name"], o)
 
-        for name, (conf, box) in best.items():
-            s = self.items.setdefault(name, dict(cand=None, count=0, zone=None, present=False,
-                                                 seen=0.0, box=None, touch=0.0))
-            zone = rough_place(box, frame.shape[1])
-            s["count"] = s["count"] + 1 if zone == s["cand"] else 1
-            s["cand"], s["seen"], s["box"] = zone, now, box
-            if s["count"] >= CONFIRM_PASSES and (not s["present"] or zone != s["zone"]):
-                s["zone"], s["present"] = zone, True
-                image = self._snapshot(frame, name, box, people, now)
-                event_id = self._log(name, "placed", zone, box, now, image)
-                if self.gemini:
-                    describe_in_background(self.gemini, event_id, image, name)
+        for name, o in here.items():
+            s = self.items.setdefault(name, dict(present=False, zone=None, box=None, misses=0, touched=False))
+            zone = rough_place(o["box"], frame.shape[1])
+            s["misses"] = 0
+            if s["present"] and zone == s["zone"]:
+                s["box"] = o["box"]
+                continue
+            s.update(present=True, zone=zone, box=o["box"], touched=False)
+            event_id = self._log(name, "placed", zone, o["box"], now,
+                                 self._snapshot(frame, name, o["box"], people, now))
+            if o["place"]:
+                db.set_description(self.db, event_id, o["place"])
 
+        unsure = False
         for name, s in self.items.items():
-            if not s["present"]:
+            if name in here or not s["present"]:
                 continue
             if any(overlaps(p, s["box"]) for p in people):
-                s["touch"] = now                         # someone's hand or body is on it
-            if name not in best and now - s["seen"] > GONE_AFTER:
-                s["present"], s["cand"], s["count"] = False, None, 0
-                picked_up = now - s["touch"] < GONE_AFTER + 2
-                self._log(name, "gone", s["zone"], s["box"], now, None, picked_up)
+                s["touched"] = True
+            s["misses"] += 1
+            if s["misses"] < MISSES_FOR_GONE:
+                unsure = True
+                continue
+            s.update(present=False, misses=0)
+            self._log(name, "gone", s["zone"], s["box"], now, None, s["touched"])
+        return unsure
 
     def _snapshot(self, frame, name, box, people, now):
         img = frame.copy()
         for x1, y1, x2, y2 in people:                    # privacy: blur anyone in the shot
-            x1, y1 = max(0, x1), max(0, y1)
             if x2 > x1 and y2 > y1:
                 img[y1:y2, x1:x2] = cv2.GaussianBlur(img[y1:y2, x1:x2], (51, 51), 0)
-        cv2.rectangle(img, box[:2], box[2:], (0, 165, 255), 4)   # the orange box Gemini is told about
+        cv2.rectangle(img, box[:2], box[2:], (0, 165, 255), 4)
         path = f"{SNAP_DIR}/{name.replace(' ', '_')}_{int(now * 1000)}.jpg"
         cv2.imwrite(path, img)
         return path
 
     def _log(self, item, event, zone, box, at, image, picked_up=False):
         event_id = db.log_event(self.db, item, event, zone, box, at, image, picked_up)
-        log(f"{time.strftime('%H:%M:%S', time.localtime(at))}  {item} {event} {zone}"
-              + (" (picked up)" if picked_up else ""))
+        log(f"{time.strftime('%H:%M:%S', time.localtime(at))}  {item} {event}"
+            + (" (picked up)" if picked_up else ""))
         return event_id
 
 
-# ---------- detection thread ----------
-
-class Detector(threading.Thread):
-    """Runs YOLO on the newest cleaned-up frame, as often as the CPU allows (capped)."""
-
-    def __init__(self, model, names, imgsz, device, memory, announcer):
-        super().__init__(daemon=True)
-        self.model, self.names, self.imgsz, self.device = model, names, imgsz, device
-        self.memory, self.announcer = memory, announcer
-        self.frame, self.new = None, threading.Event()
-        self.dets, self.ms, self.fps = [], 0.0, 0.0
-
-    def submit(self, frame):
-        self.frame = frame
-        self.new.set()
-
-    def run(self):
-        while True:
-            self.new.wait()
-            self.new.clear()
-            frame, t0 = self.frame, time.monotonic()
-            dets = detect(self.model, frame, self.names, self.imgsz, self.device)
-            self.dets, self.ms = dets, (time.monotonic() - t0) * 1000
-            now = time.time()
-            self.announcer.update([d[4] for d in dets], now)
-            self.memory.update(frame, dets, now)
-            spent = time.monotonic() - t0
-            self.fps = 1 / max(spent, 1 / MAX_DETECT_FPS)
-            time.sleep(max(0.0, 1 / MAX_DETECT_FPS - spent))
-
-
 # ---------- window ----------
-
-class AutoBrightness:
-    """Nudges the camera's own brightness so the picture isn't washed out or murky.
-
-    Your camera ignores exposure settings, but its brightness setting works:
-    lowering it cut blown-out highlights from 0.7% to 0.1% in testing.
-    The original value is put back when Rewind quits.
-    """
-
-    def __init__(self, cam):
-        self.cam, self.original = cam, cam.get(cv2.CAP_PROP_BRIGHTNESS)
-        self.value, self.next = self.original, 0.0
-        self.enabled = CAMERA_BRIGHTNESS[0] <= self.original <= CAMERA_BRIGHTNESS[1]
-
-    def update(self, frame, now):
-        if not self.enabled or now < self.next:
-            return
-        self.next = now + 0.5
-        grey = cv2.cvtColor(cv2.resize(frame, (160, 90)), cv2.COLOR_BGR2GRAY)
-        step = 0
-        if grey.mean() > 150 or (grey >= 250).mean() > 0.02:
-            step = -8                                    # washed out
-        elif grey.mean() < 90:
-            step = 8                                     # murky
-        if step:
-            self.value = min(max(self.value + step, CAMERA_BRIGHTNESS[0]), CAMERA_BRIGHTNESS[1])
-            self.cam.set(cv2.CAP_PROP_BRIGHTNESS, self.value)
-
-    def restore(self):
-        if self.enabled:
-            self.cam.set(cv2.CAP_PROP_BRIGHTNESS, self.original)
-
 
 def label(frame, text, x, y, colour):
     """Smooth text on a solid tag, readable on any background."""
@@ -540,11 +575,12 @@ def label(frame, text, x, y, colour):
     cv2.putText(frame, text, (x + 4, y - base - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (20, 20, 20), 1, cv2.LINE_AA)
 
 
-def draw(frame, dets, status):
-    for x1, y1, x2, y2, name, conf in dets:
-        colour = (80, 200, 80) if name == "person" else (0, 165, 255)
+def draw(frame, objects, status):
+    for o in objects:
+        x1, y1, x2, y2 = o["box"]
+        colour = (80, 200, 80) if o["name"] == "person" else (0, 165, 255)
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2, cv2.LINE_AA)
-        label(frame, f"{name} {conf:.0%}", x1, y1, colour)
+        label(frame, o["name"], x1, y1, colour)
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 30), (0, 0, 0), -1)
     cv2.putText(frame, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
     return frame
@@ -553,8 +589,6 @@ def draw(frame, dets, status):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", default="0", help="camera number or video file")
-    parser.add_argument("--items", help="comma-separated names outside the library (uses YOLO-World)")
-    parser.add_argument("--imgsz", type=int, default=640, help="YOLO input size")
     parser.add_argument("--no-voice", action="store_true", help="don't speak")
     parser.add_argument("--no-mic", action="store_true", help="don't listen to the microphone")
     parser.add_argument("--mic-threshold", type=int, default=100,
@@ -568,52 +602,44 @@ def main():
     source = int(args.source) if args.source.isdigit() else args.source
 
     key = os.getenv("GEMINI_API_KEY", "").strip()
-    # retry busy (429/503) replies a few times: they're usually gone a second later
-    retry = types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=4, initial_delay=1.0))
-    gemini = genai.Client(api_key=key, http_options=retry) if key else None
-    print(f"Gemini: on ({GEMINI_MODEL})" if gemini else
-          "Gemini: off (put GEMINI_API_KEY in .env for place descriptions and voice questions)")
-
-    device = pick_device()
-    items = [i.strip() for i in args.items.split(",")] if args.items else None
-    model, names = load_model(items)
-    print(f"device={device} imgsz={args.imgsz} knows {len(names)} things: {', '.join(names[:12])}...")
+    if not key:
+        raise SystemExit("Rewind needs Gemini to see: put GEMINI_API_KEY=... in .env")
+    # retry a busy server (503) a couple of times; quota errors are handled by waiting instead
+    retry = types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=3, initial_delay=1.0,
+                                                                   http_status_codes=[500, 502, 503, 504]))
+    gemini = genai.Client(api_key=key, http_options=retry)
+    print(f"Gemini: {GEMINI_MODEL} does the seeing")
 
     cam = open_camera(source)
     ok, frame = cam.read()
     if not ok:
         raise SystemExit("Camera opened but gave no frame. Try --source 1.")
-    enhancer = Enhancer()
-    detect(model, enhancer(to_work_size(frame)), names, args.imgsz, device)   # warm-up: first run is slow
 
     delete_old_snapshots()
     speaker = Speaker(enabled=not args.no_voice)
     speaker.start()
-    detector = Detector(model, names, args.imgsz, device, Memory(db.open_db(), gemini), Announcer(speaker))
-    detector.start()
+    looker = Looker(gemini, Memory(db.open_db()), Announcer(speaker))
+    looker.start()
     listener = None
     if not args.no_mic:
-        if gemini:
-            listener = Listener(gemini, speaker, [n for n in names if n != "person"], detector,
-                                args.mic_threshold)
-            listener.start()
-            print("Microphone: on. Ask \"where is my phone?\" or \"what can you see?\"")
-        else:
-            print("Microphone: off (needs GEMINI_API_KEY in .env to understand speech)")
+        listener = Listener(gemini, speaker, looker, args.mic_threshold)
+        listener.start()
+        print("Microphone: on. Ask \"where is my phone?\" or \"what can you see?\"")
 
     is_file = not isinstance(source, int)
     brightness = AutoBrightness(cam) if not is_file else None
-    print("Running. Rewind will say the names of what it sees. Q in the window to quit.")
+    print("Running. Rewind looks when something changes and says what it sees. Q in the window to quit.")
+    enhancer, gate = Enhancer(), ChangeGate()
     frame_gap = 1 / (cam.get(cv2.CAP_PROP_FPS) or 30) if is_file else 0
-    show_enhanced = True
+    show_enhanced, look_now = True, False
     fps, fps_frames, fps_t0 = 0.0, 0, time.monotonic()
     started = last_frame = time.monotonic()
-    window = "Rewind (Q quit, E enhanced view)"
+    window = "Rewind (Q quit, E enhanced view, SPACE look now)"
 
     while True:
         ok, frame = cam.read()
         if not ok:
-            print("end of video" if is_file else "camera stopped giving frames")
+            log("end of video" if is_file else "camera stopped giving frames")
             break
         if is_file:                                      # play files at real speed
             time.sleep(max(0.0, frame_gap - (time.monotonic() - last_frame)))
@@ -626,25 +652,42 @@ def main():
         if brightness:
             brightness.update(raw, now)
         clean = enhancer(raw)
-        detector.submit(clean)
+        gate.update(clean, now)
+
+        due = (gate.pending or look_now
+               or (looker.unsure and now - looker.last >= RECHECK_SECONDS)
+               or now - looker.last >= HEARTBEAT_SECONDS)
+        if due and gate.settled(now) and looker.ready(now):
+            looker.request(clean.copy())
+            gate.looked()
+            looker.unsure = look_now = False
 
         if not args.no_window:
-            status = (f"video {fps:.0f} fps | detect {detector.fps:.0f} fps ({detector.ms:.0f} ms) | "
-                      f"{'enhanced' if show_enhanced else 'raw'} view")
+            if looker.problem:
+                state = f"Gemini: {looker.problem}"
+            elif looker.busy:
+                state = "looking..."
+            elif gate.pending:
+                state = "waiting for still"
+            else:
+                state = f"last look {now - looker.last:.0f}s ago" if looker.count else "starting"
+            status = f"video {fps:.0f} fps | {looker.count} looks | {state} | {'enhanced' if show_enhanced else 'raw'}"
             if listener:
                 status += f" | mic {listener.level}"
             view = (clean if show_enhanced else raw).copy()
-            cv2.imshow(window, draw(view, detector.dets, status))
+            cv2.imshow(window, draw(view, looker.objects, status))
             key_pressed = cv2.waitKey(1) & 0xFF
             if key_pressed in (ord("e"), ord("E")):
                 show_enhanced = not show_enhanced
+            elif key_pressed == ord(" "):
+                look_now = True
             if key_pressed in (ord("q"), ord("Q")) or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
                 break
         if args.seconds and now - started >= args.seconds:
             break
 
-    log(f"video {fps:.0f} fps, detect {detector.fps:.0f} fps, seeing: "
-        + (", ".join(sorted({d[4] for d in detector.dets})) or "nothing"))
+    log(f"video {fps:.0f} fps, {looker.count} looks, seeing: "
+        + (", ".join(sorted({o['name'] for o in looker.objects})) or "nothing"))
     if brightness:
         brightness.restore()
     cam.release()

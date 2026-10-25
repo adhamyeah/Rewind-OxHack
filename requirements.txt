@@ -1,6 +1,4 @@
 opencv-python
-ultralytics
-git+https://github.com/ultralytics/CLIP.git   # text encoder YOLO-World needs
 fastapi
 uvicorn
 google-genai
