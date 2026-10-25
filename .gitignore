@@ -7,4 +7,5 @@ snapshots/
 .env
 .pytest_cache/
 zones.json
-weights/        # CLIP text encoder, downloaded automatically on first run (338 MB)
+# CLIP text encoder, downloaded automatically on first run (338 MB)
+weights/
