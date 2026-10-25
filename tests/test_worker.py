@@ -80,6 +80,24 @@ def test_gemini_failure_triggers_cooldown_so_it_is_not_retried(monkeypatch, tmp_
     w.stop()
 
 
+def test_other_gemini_failures_are_retried_soon(monkeypatch, tmp_path):
+    # a network blip must not switch Gemini off for 10 minutes: nothing new is learned meanwhile
+    monkeypatch.setattr(kw.config, "GEMINI_RETRY_SECONDS", 0)
+    calls = []
+
+    def flaky(frame):
+        calls.append(1)
+        raise RuntimeError("503 server busy")
+
+    mem, w = make_worker(monkeypatch, tmp_path, flaky)
+    w.submit(FRAME, YOLO)
+    assert wait_for(lambda: len(mem.keyframes) == 1)
+    w.submit(FRAME, YOLO)
+    assert wait_for(lambda: len(mem.keyframes) == 2)
+    assert len(calls) == 2  # tried Gemini again on the next keyframe
+    w.stop()
+
+
 def test_missing_item_asks_for_a_confirming_keyframe(monkeypatch, tmp_path):
     asked = []
     results = [[(1, 1, 9, 9, "mug", 1.0)], [], []]

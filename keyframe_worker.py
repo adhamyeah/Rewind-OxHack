@@ -51,10 +51,15 @@ class KeyframeWorker:
                 self.status = "gemini"
                 return self.detect_fn(frame)
             except Exception as e:
-                reason = "quota used up" if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e) else str(e)[:100]
-                self.gemini_off_until = time.time() + config.GEMINI_COOLDOWN
+                quota = "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e)
+                reason = "quota used up" if quota else str(e)[:100]
+                # a used-up quota won't come back soon; a network blip or busy server usually
+                # does, and while Gemini is off nothing new can be learned (YOLO only knows
+                # names Gemini already predicted), so retry those quickly
+                wait = config.GEMINI_COOLDOWN if quota else config.GEMINI_RETRY_SECONDS
+                self.gemini_off_until = time.time() + wait
                 print(f"[worker] Gemini failed ({reason}); using YOLO boxes for the next "
-                      f"{config.GEMINI_COOLDOWN / 60:.0f} min")
+                      + (f"{wait / 60:.0f} min" if wait >= 60 else f"{wait:.0f} s"))
         self.status = "yolo"
         return [d for d in yolo_dets if d[4] != "person"]
 

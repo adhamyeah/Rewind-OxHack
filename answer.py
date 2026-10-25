@@ -14,6 +14,7 @@ import wave
 
 import config
 from gemini_detector import gemini_pick_label, normalise_label
+from vocab import VOCAB
 
 
 def play_wav(path):
@@ -48,18 +49,21 @@ def speak_elevenlabs(text):
 
 class Answerer:
     def __init__(self, memory, ui_state, speak=speak_elevenlabs, pick_label=gemini_pick_label,
-                 ready=lambda: True):
+                 ready=lambda: True, vocab=None):
         self.memory = memory
         self.ui = ui_state
         self.speak = speak
         self.pick_label = pick_label
         self.ready = ready  # True when memory is up to date with the table
+        self.vocab = vocab if vocab is not None else (VOCAB if config.OPEN_VOCAB else None)
 
     def ask(self, question):
         """Answer one question. Returns the answer text."""
-        label = normalise_label(question) or self.pick_label(question)
+        # any name we track (including ones learned from Gemini), else let Gemini work it out
+        find = self.vocab.find_in_question if self.vocab is not None else normalise_label
+        label = find(question) or self.pick_label(question)
         if label is None:
-            text = "Sorry, I don't know that item. Try keys, glasses, wallet, phone, mug, pen..."
+            text = "Sorry, I didn't catch which thing you mean. Try 'where are my keys?'"
             print(f"[answer] {text}")
             self._say(text)
             return text

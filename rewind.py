@@ -3,10 +3,11 @@ Rewind - Ctrl+Z for the physical world.
 
 Trackbar 0..n-1 = keyframes (the table's history), n = LIVE.
 Type a question in the terminal ("where are my keys?"); the window jumps to that moment.
-Keys: , = back one keyframe, . = forward, l = live, q = quit.
+Keys: , = back one keyframe, . = forward, l = live, SPACE = look now (send this moment to Gemini), q = quit.
 """
 
 import argparse
+import socket
 import threading
 import time
 
@@ -34,7 +35,28 @@ def terminal_questions(answerer):
             answerer.ask(q)
 
 
+def claim_single_instance(port=47_311):
+    """Only one Rewind at a time: a second one would get black frames from the busy camera.
+
+    Holding a local port is the lock; Windows and macOS free it when the process exits,
+    even if it crashes. Returns the socket (keep it alive) or None if Rewind already runs.
+    """
+    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):       # Windows: refuse to share the port
+        lock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    try:
+        lock.bind(("127.0.0.1", port))
+    except OSError:
+        lock.close()
+        return None
+    return lock
+
+
 def main():
+    instance_lock = claim_single_instance()
+    if instance_lock is None:
+        raise SystemExit("[rewind] Rewind is already running in another window or terminal.\n"
+                         "         Close that one first (press q in its window), then start again.")
     ap = argparse.ArgumentParser(description="Rewind")
     ap.add_argument("--source", default="0", help="camera index or a video file")
     ap.add_argument("--no-gemini", action="store_true", help="use YOLO boxes for memory, skip Gemini")
@@ -52,7 +74,10 @@ def main():
     store = Store()
     worker = KeyframeWorker(memory, store, use_gemini=use_gemini,
                             on_pending=lambda: det.force_keyframe())  # det is created just below
-    cam = Camera(args.source)
+    try:
+        cam = Camera(args.source)
+    except RuntimeError as e:
+        raise SystemExit(f"[rewind] {e}")
     det = LiveDetector(cam, pick_device(), on_keyframe=worker.submit)
     cam.start()
     det.start()
@@ -102,8 +127,12 @@ def main():
                 continue
 
             if position >= n or position >= len(memory.keyframes):
-                last = memory.keyframes[-1].detections if memory.keyframes else None
-                boxes = ui.pick_live_boxes(det.latest(), last, det.dirty, worker.busy)
+                if config.OPEN_VOCAB:   # Gemini names the objects: always show its latest boxes
+                    boxes = ui.pick_live_boxes_open(det.latest(), memory.keyframes[-1] if memory.keyframes else None,
+                                                    time.time())
+                else:
+                    last = memory.keyframes[-1].detections if memory.keyframes else None
+                    boxes = ui.pick_live_boxes(det.latest(), last, det.dirty, worker.busy)
                 view = ui.draw_detections(live.copy(), boxes)
                 mode = "LIVE"
             else:
@@ -131,6 +160,9 @@ def main():
                 cv2.setTrackbarPos("time", config.WINDOW, position)
             elif key in (ord("l"), ord("L")):
                 following_live = True
+            elif key == ord(" "):       # show Gemini what's in view right now
+                det.request_look()
+                print("[rewind] looking now...")
             if args.seconds and time.perf_counter() - started > args.seconds:
                 break
     finally:

@@ -12,6 +12,7 @@ import time
 import cv2
 
 import config
+from vocab import VOCAB
 
 _client = None
 _last_call = 0.0
@@ -52,8 +53,13 @@ def _image_part(jpg_bytes):
     return types.Part.from_bytes(data=jpg_bytes, mime_type="image/jpeg")
 
 
-def parse_gemini_json(text, width, height):
-    """Turn Gemini's JSON reply into pixel detections. Never raises on odd data."""
+def parse_gemini_json(text, width, height, vocab=None):
+    """Turn Gemini's JSON reply into pixel detections. Never raises on odd data.
+
+    With a vocab (open vocabulary) any thing is kept under its tracked name;
+    without one, only config.ITEMS are kept.
+    """
+    to_label = vocab.canonical if vocab is not None else normalise_label
     try:
         data = json.loads(text)
     except (TypeError, ValueError):
@@ -63,9 +69,9 @@ def parse_gemini_json(text, width, height):
     dets = []
     for obj in data if isinstance(data, list) else []:
         try:
-            label = normalise_label(obj["label"])
+            label = to_label(obj["label"])
             if label is None:
-                continue  # not one of our items
+                continue  # not one of our items (or a person / part of the room)
             # Gemini order is [ymin, xmin, ymax, xmax] on a 0-1000 grid: y comes FIRST.
             ymin, xmin, ymax, xmax = (min(1000.0, max(0.0, float(v))) for v in obj["box_2d"])
         except (KeyError, TypeError, ValueError):
@@ -81,9 +87,17 @@ def parse_gemini_json(text, width, height):
     return dets
 
 
-def gemini_detect(frame, client=None):
-    """Ask Gemini for item boxes in `frame`. Raises on failure (the caller falls back)."""
+def _default_vocab():
+    return VOCAB if config.OPEN_VOCAB else None
+
+
+def gemini_detect(frame, client=None, vocab=None):
+    """Ask Gemini for item boxes in `frame`. Raises on failure (the caller falls back).
+
+    Open vocabulary: Gemini may name anything; new names are learned into `vocab`.
+    """
     global _last_call
+    vocab = vocab if vocab is not None else _default_vocab()
     client = client or _get_client()
     if client is None:
         raise RuntimeError("Gemini is not configured")
@@ -96,26 +110,45 @@ def gemini_detect(frame, client=None):
     ok, jpg = cv2.imencode(".jpg", frame)
     if not ok:
         raise RuntimeError("could not encode frame")
+    prompt = config.GEMINI_OPEN_PROMPT if vocab else config.GEMINI_PROMPT
     reply = client.models.generate_content(
         model=config.GEMINI_MODEL,
-        contents=[_image_part(jpg.tobytes()), config.GEMINI_PROMPT],
-        config={"response_mime_type": "application/json"},
+        contents=[_image_part(jpg.tobytes()), prompt],
+        config={"response_mime_type": "application/json", "response_schema": config.GEMINI_OPEN_SCHEMA}
+        if vocab else {"response_mime_type": "application/json"},
     )
-    return parse_gemini_json(reply.text, w, h)
+    dets = parse_gemini_json(reply.text, w, h, vocab)
+    if vocab is not None:
+        new = vocab.learn([d[4] for d in dets])
+        if new:
+            print(f"[vocab] learned: {', '.join(new)}")
+    return dets
 
 
-def gemini_pick_label(question, client=None):
-    """Fallback when keywords fail: ask Gemini which item a question is about, or None."""
+def gemini_pick_label(question, client=None, vocab=None):
+    """Fallback when keywords fail: ask Gemini which item a question is about, or None.
+
+    Open vocabulary: a thing we haven't seen yet still gets a name, so the answer can
+    say "I haven't seen the stapler yet" instead of "I don't know that item".
+    """
+    vocab = vocab if vocab is not None else _default_vocab()
     client = client or _get_client()
     if client is None:
         return None
+    if vocab is not None:
+        prompt = (f"Things a home camera has seen: {', '.join(vocab.names()) or 'nothing yet'}. Which thing is this "
+                  "question about? Reply with the matching name from that list; if it's about a "
+                  "thing not in the list, reply with its plain name in 1-3 words; if it isn't about "
+                  f"a thing, reply NONE.\nQuestion: {question}")
+    else:
+        prompt = (f"Which one of {config.ITEMS} is this question about? "
+                  f"Reply with just the item name, or NONE.\nQuestion: {question}")
     try:
-        reply = client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=f"Which one of {config.ITEMS} is this question about? "
-                     f"Reply with just the item name, or NONE.\nQuestion: {question}",
-        )
-        return normalise_label(reply.text)
+        reply = client.models.generate_content(model=config.GEMINI_MODEL, contents=prompt)
+        text = (reply.text or "").strip()
+        if vocab is None:
+            return normalise_label(text)
+        return None if text.upper().startswith("NONE") else vocab.canonical(text)
     except Exception as e:
         print(f"[gemini] could not interpret question: {e}")
         return None

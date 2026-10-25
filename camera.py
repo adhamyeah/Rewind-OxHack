@@ -9,25 +9,56 @@ import cv2
 import config
 
 
+BLACK = 3.0  # average brightness (0-255) below this: the camera is giving us nothing
+
+
+def _open(index, backend, width, height):
+    cap = cv2.VideoCapture(index, backend)
+    # MJPG lets most USB webcams do 30 fps (raw YUYV often can't).
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # don't queue old frames
+    return cap
+
+
+def _gives_picture(cap, tries=20):
+    """True once a real (not all-black) frame arrives. The first frames are often dark."""
+    for _ in range(tries):
+        ok, frame = cap.read()
+        if ok and frame is not None and frame.mean() > BLACK:
+            return True
+    return False
+
+
 class Camera:
     def __init__(self, source, width=config.CAMERA_W, height=config.CAMERA_H):
         self.is_file = not str(source).isdigit()
         if self.is_file:
             self.cap = cv2.VideoCapture(source)
+            if not self.cap.isOpened():
+                raise RuntimeError(f"Could not open video: {source!r}")
         else:
             index = int(source)
-            # DirectShow opens much faster than the Windows default backend.
-            backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
-            self.cap = cv2.VideoCapture(index, backend)
-            # MJPG lets most USB webcams do 30 fps (raw YUYV often can't).
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # don't queue old frames
-
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open camera or video: {source!r}. Try --source 1")
+            # DirectShow opens much faster than the Windows default backend; Media Foundation
+            # is the fallback. When another program holds the camera, Windows often "opens" it
+            # anyway and hands out black frames, so we check for a real picture, not just open().
+            backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF] if platform.system() == "Windows" else [cv2.CAP_ANY]
+            self.cap = None
+            for backend in backends:
+                cap = _open(index, backend, width, height)
+                if cap.isOpened() and _gives_picture(cap):
+                    self.cap = cap
+                    break
+                cap.release()
+            if self.cap is None:
+                raise RuntimeError(
+                    f"Camera {index} gives no picture (only black frames).\n"
+                    "  - Is Rewind (or Zoom/Teams/the Camera app) already running? Close it: Windows\n"
+                    "    lets only one program use the camera at a time.\n"
+                    "  - Is the lens covered (privacy shutter or camera key)?\n"
+                    "  - Another camera? Try --source 1")
 
         self.file_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
         self.lock = threading.Lock()

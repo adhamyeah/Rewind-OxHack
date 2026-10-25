@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 import config
+from vocab import VOCAB
 
 
 def pick_device():
@@ -54,7 +55,10 @@ class LiveDetector:
         from ultralytics import YOLO, YOLOWorld
 
         self.item_model = YOLOWorld(config.MODEL)
-        self.item_model.set_classes(config.ITEMS)
+        self.vocab = VOCAB if config.OPEN_VOCAB else None
+        self.vocab_version = -1
+        self.item_names = []       # what YOLO-World is looking for right now
+        self._refresh_classes()
         self.person_model = YOLO(config.PERSON_MODEL) if config.USE_PERSON_MODEL else None
 
         self.lock = threading.Lock()
@@ -66,6 +70,8 @@ class LiveDetector:
         self.still_for = 0.0
         self.dirty = True          # True = scene changed since the last keyframe (first scene counts)
         self.last_motion = time.perf_counter()
+        self.last_keyframe = 0.0   # when the last keyframe fired
+        self.look_now = False      # SPACE in the window: take a keyframe right away
         self.item_ms = 0.0
         self.keyframes_fired = 0
         self.passes = 0
@@ -88,16 +94,37 @@ class LiveDetector:
             self.device = "cpu"
             self.detect(blank)
 
+    def _refresh_classes(self):
+        """Tell YOLO-World what to look for: exactly the names Gemini has predicted so far.
+
+        Until Gemini's first keyframe that's nothing, so the live view shows only people.
+        (Without open vocabulary it's the fixed config.ITEMS, as originally.)
+        """
+        if self.vocab is None:
+            if self.vocab_version == -1:
+                self.item_model.set_classes(config.ITEMS)
+                self.item_names, self.vocab_version = list(config.ITEMS), 0
+            return
+        if self.vocab.version != self.vocab_version:
+            self.vocab_version = self.vocab.version
+            names = self.vocab.names()
+            if names:
+                self.item_model.set_classes(names)
+                print(f"[live] YOLO now tracks what Gemini predicted: {', '.join(names)}")
+            self.item_names = names
+
     def detect(self, frame):
         """Run YOLO-World (and the person model) on one frame -> list of detection tuples."""
+        self._refresh_classes()
         h, w = frame.shape[:2]
         dets = []
         start = time.perf_counter()
-        r = self.item_model.predict(frame, conf=config.CONFIDENCE, imgsz=config.IMGSZ,
-                                    device=self.device, verbose=False)[0]
+        if self.item_names:                  # nothing predicted yet: no item names to look for
+            r = self.item_model.predict(frame, conf=config.CONFIDENCE, imgsz=config.IMGSZ,
+                                        device=self.device, verbose=False)[0]
+            for (x1, y1, x2, y2), c, k in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist()):
+                dets.append((int(x1), int(y1), int(x2), int(y2), r.names[int(k)], float(c)))
         self.item_ms = (time.perf_counter() - start) * 1000
-        for (x1, y1, x2, y2), c, k in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist()):
-            dets.append((int(x1), int(y1), int(x2), int(y2), r.names[int(k)], float(c)))
         if self.person_model is not None:
             r = self.person_model.predict(frame, conf=config.PERSON_CONFIDENCE, imgsz=config.IMGSZ,
                                           classes=[0], device=self.device, verbose=False)[0]
@@ -143,8 +170,14 @@ class LiveDetector:
                 self.baseline = cv2.addWeighted(gate, config.DRIFT, self.baseline, 1 - config.DRIFT, 0)
 
             # --- fire one keyframe once the scene has settled ---
-            if self.dirty and self.still_for >= config.SETTLE_SECONDS:
-                self.dirty = False
+            # ...or once it has kept changing for MAX_KEYFRAME_WAIT: someone in front of the
+            # camera, or holding a thing up to it, never looks "still", and without this the
+            # new thing was never shown to Gemini at all.
+            settled = self.still_for >= config.SETTLE_SECONDS
+            overdue = now - self.last_keyframe >= config.MAX_KEYFRAME_WAIT
+            if self.look_now or (self.dirty and (settled or overdue)):
+                self.dirty = self.look_now = False
+                self.last_keyframe = now
                 dets = self.detect(frame)  # fresh boxes on the settled scene
                 with self.lock:
                     self.detections = dets
@@ -160,6 +193,10 @@ class LiveDetector:
     def force_keyframe(self):
         """Ask for one more keyframe of the (still) scene without waiting for motion."""
         self.dirty = True
+
+    def request_look(self):
+        """Take a keyframe on the next pass, moving or not (the SPACE key)."""
+        self.look_now = True
 
     def latest(self):
         with self.lock:

@@ -90,3 +90,19 @@ def pick_live_boxes(yolo_dets, last_keyframe_dets, scene_changed, memory_busy):
         return yolo_dets
     # keep YOLO's grey person boxes; items come from memory
     return [d for d in yolo_dets if d[4] == "person"] + list(last_keyframe_dets)
+
+
+def pick_live_boxes_open(yolo_dets, last_keyframe, now):
+    """Which boxes the LIVE view draws with open vocabulary.
+
+    Gemini names the objects; YOLO only knows names Gemini has taught it and, on a webcam,
+    rarely finds them. So the latest Gemini boxes are ALWAYS drawn while they're recent
+    (GEMINI_BOX_SECONDS), moving scene or not. Measured live: the settled-only rule above
+    put Gemini's boxes on screen 22% of the time and an empty view 73% of the time.
+    YOLO adds people and anything Gemini's last look didn't include.
+    """
+    if last_keyframe is None or now - last_keyframe.time > config.GEMINI_BOX_SECONDS:
+        return list(yolo_dets)
+    gemini = list(last_keyframe.detections)
+    named = {d[4] for d in gemini}
+    return [d for d in yolo_dets if d[4] == "person" or d[4] not in named] + gemini
