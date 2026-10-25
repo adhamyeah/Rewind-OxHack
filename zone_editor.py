@@ -1,5 +1,8 @@
 """
-zone_editor.py - draw named zones on the live camera view.
+zone_editor.py - draw named zones on the live camera view, in an OpenCV window.
+
+The easiest way is the web page's Zones card while Rewind runs. This window is the
+alternative when Rewind isn't running (it needs the camera to itself).
 
 Put the camera in its final position first (tape it down!), then:
 

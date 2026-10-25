@@ -3,3 +3,5 @@ ultralytics
 google-genai
 elevenlabs
 sounddevice
+pillow
+python-dotenv

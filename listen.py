@@ -3,7 +3,11 @@ listen.py - hands-free questions (Stage 5): just say "where are my glasses?"
 
 The microphone is watched on this computer. Only when someone actually speaks
 is that short clip sent to ElevenLabs speech-to-text; silence never leaves the
-laptop. While Rewind is talking, the mic is ignored so it doesn't answer itself.
+laptop. While Rewind is talking (or someone is holding the page's Talk button),
+the mic is ignored so it doesn't answer itself or answer twice.
+
+The web page's Talk button records in the browser instead; that audio comes
+here too (Listener.transcribe_upload), so both use the same speech-to-text.
 
 Setup (once):
   pip install -U sounddevice elevenlabs
@@ -41,6 +45,8 @@ SYNONYMS = {
     "water bottle": ["water bottle", "bottle", "flask"],
 }
 QUESTION_WORDS = ("where", "find", "lost", "seen", "left", "put", "missing", "rewind", "show", "looking for")
+# Browsers record webm/opus (Chrome, Firefox) or mp4/aac (Safari); ElevenLabs works the format out itself.
+UPLOAD_EXTENSIONS = {"webm": "webm", "mp4": "mp4", "ogg": "ogg", "wav": "wav", "mpeg": "mp3"}
 REWIND_WORDS = ("show", "rewind", "timeline", "history", "replay")
 
 
@@ -75,38 +81,46 @@ class Listener:
         self.level = 0.0
         self.model = STT_MODEL
         self.language = "eng"
+        self.sd = None
+        self.listening = False      # True while the always-on microphone is running
 
         from speak import load_key
 
         key = load_key()
         if not key:
-            print("[listen] no ELEVENLABS_API_KEY in .env - voice questions are off (number keys still work)")
+            print("[listen] no ELEVENLABS_API_KEY in .env - voice questions are off (typing still works)")
             return
         try:
-            import sounddevice
             from elevenlabs.client import ElevenLabs
-        except (ImportError, OSError) as e:
-            print(f"[listen] can't use the microphone ({e}): pip install -U sounddevice elevenlabs "
-                  "- voice questions are off")
+        except ImportError as e:
+            print(f"[listen] elevenlabs isn't installed ({e}): pip install -U elevenlabs - voice questions are off")
             return
-        self.sd = sounddevice
         self.client = ElevenLabs(api_key=key)
+        try:
+            import sounddevice
+
+            self.sd = sounddevice
+        except (ImportError, OSError) as e:
+            print(f"[listen] can't use the microphone here ({e}): pip install -U sounddevice "
+                  "- hands-free questions are off (the page's Talk button still works)")
 
     @property
     def enabled(self):
         return self.client is not None
 
     def start(self):
-        if self.enabled:
+        if self.enabled and self.sd is not None:
             threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
         block = int(SAMPLE_RATE * BLOCK_SECONDS)
         try:
             with self.sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
+                self.listening = True
                 self.listen(lambda: stream.read(block)[0][:, 0])
         except Exception as e:
-            print(f"[listen] microphone problem ({type(e).__name__}): {e} - voice questions are off")
+            print(f"[listen] microphone problem ({type(e).__name__}): {e} - hands-free questions are off")
+        self.listening = False
 
     def listen(self, read_block):
         """read_block() -> one block of int16 samples. Runs forever."""
@@ -152,24 +166,18 @@ class Listener:
         self.sent.append(now)
         return True
 
-    def transcribe(self, samples):
-        from speak import api_error_text, pcm_to_wav
+    def _speech_to_text(self, file):
+        """One ElevenLabs speech-to-text call. Switches model or language if ElevenLabs refuses them; raises otherwise."""
+        from speak import api_error_text
 
-        wav = pcm_to_wav(samples.astype(np.int16).tobytes(), SAMPLE_RATE)
-        text = ""
-        for attempt in range(3):
+        for _ in range(3):
             try:
                 options = {"language_code": self.language} if self.language else {}
-                result = self.client.speech_to_text.convert(
-                    file=("question.wav", wav, "audio/wav"),
-                    model_id=self.model,
-                    tag_audio_events=False,
-                    **options,
-                )
-                text = (result.text or "").strip()
-                break
+                result = self.client.speech_to_text.convert(file=file, model_id=self.model,
+                                                            tag_audio_events=False, **options)
+                return (result.text or "").strip()
             except Exception as e:
-                reason, status = api_error_text(e), getattr(e, "status_code", None)
+                reason = api_error_text(e)
                 if "model" in reason.lower() and self.model != FALLBACK_STT_MODEL:
                     print(f"[listen] {self.model} not accepted ({reason}) - switching to {FALLBACK_STT_MODEL}")
                     self.model = FALLBACK_STT_MODEL
@@ -177,21 +185,49 @@ class Listener:
                 if "language" in reason.lower() and self.language:
                     self.language = None  # let ElevenLabs detect the language itself
                     continue
-                self.errors += 1
-                if self.errors <= 3:
-                    hint = ""
-                    if status in (401, 403):
-                        hint = ("\n  -> ElevenLabs refused this key for speech-to-text. Make sure the key in .env is "
-                                "the one you switched Speech to Text on for (ElevenLabs only shows a key once, "
-                                "so an older key may still be in .env).")
-                    elif status == 429:
-                        hint = "\n  -> Too many requests, or out of ElevenLabs credits."
-                    print(f"[listen] speech-to-text failed - {reason}{hint}")
-                return
+                raise
+        return ""
+
+    def _report(self, e):
+        from speak import api_error_text
+
+        reason, status = api_error_text(e), getattr(e, "status_code", None)
+        self.errors += 1
+        if self.errors <= 3:
+            hint = ""
+            if status in (401, 403):
+                hint = ("\n  -> ElevenLabs refused this key for speech-to-text. Make sure the key in .env is "
+                        "the one you switched Speech to Text on for (ElevenLabs only shows a key once, "
+                        "so an older key may still be in .env).")
+            elif status == 429:
+                hint = "\n  -> Too many requests, or out of ElevenLabs credits."
+            print(f"[listen] speech-to-text failed - {reason}{hint}")
+
+    def transcribe(self, samples):
+        """A clip from the always-on microphone -> text -> on_text (background thread)."""
+        from speak import pcm_to_wav
+
+        wav = pcm_to_wav(samples.astype(np.int16).tobytes(), SAMPLE_RATE)
+        try:
+            text = self._speech_to_text(("question.wav", wav, "audio/wav"))
+        except Exception as e:
+            self._report(e)
+            return
         if text and not re.fullmatch(r"[\W_]*(\(.*\)|\[.*\])?[\W_]*", text):  # skip "(silence)" and the like
             print(f'[heard] "{text}"')
             self.on_text(text)
 
+    def transcribe_upload(self, audio, content_type="audio/webm"):
+        """Audio recorded by the web page's Talk button -> text. Raises if it can't (the page shows a message)."""
+        if not self.enabled:
+            raise RuntimeError("speech-to-text is off (no ELEVENLABS_API_KEY or elevenlabs not installed)")
+        kind = content_type.split(";")[0].split("/")[-1].lower()
+        try:
+            text = self._speech_to_text((f"speech.{UPLOAD_EXTENSIONS.get(kind, 'webm')}", audio, content_type))
+        except Exception as e:
+            self._report(e)
+            raise
+        return "" if re.fullmatch(r"[\W_]*(\(.*\)|\[.*\])?[\W_]*", text) else text
 
 if __name__ == "__main__":
     items = list(SYNONYMS)
@@ -201,7 +237,7 @@ if __name__ == "__main__":
         print(f"  -> item: {item}, question: {question}, rewind: {rewind}")
 
     listener = Listener(show)
-    if not listener.enabled:
+    if not listener.enabled or listener.sd is None:
         raise SystemExit(1)
     try:
         print(f"[listen] microphone: {listener.sd.query_devices(kind='input')['name']}")

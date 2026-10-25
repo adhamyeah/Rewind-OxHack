@@ -1,0 +1,3 @@
+# Optional extras - Rewind runs fine without them.
+psycopg[binary]   # Tiger Data copy of moments and events (TIGER_DATABASE_URL in .env)
+pyserial          # the physical rewind knob (python rewind.py --knob COM3)

@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rewind</title>
+<style>
+  :root {
+    --bg: #f6f4ef; --card: #ffffff; --ink: #1b1a17; --muted: #6f6b61; --line: #e4e0d6;
+    --accent: #e0a100; --accent-ink: #1b1a17; --live: #d6372b; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12110f; --card: #1c1b18; --ink: #f2efe6; --muted: #9b968a; --line: #2e2c27;
+      --accent: #ffd24a; --live: #ff5a4d; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12110f; --card: #1c1b18; --ink: #f2efe6; --muted: #9b968a; --line: #2e2c27;
+    --accent: #ffd24a; --live: #ff5a4d; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  body {
+    overflow-anchor: none;
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 16px 48px; }
+
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  h1 { margin: 0; font-size: clamp(3rem, 9vw, 5.5rem); line-height: .95; font-weight: 800; letter-spacing: -.04em; }
+  h1 .arrow { color: var(--accent); }
+  .tag { margin: 8px 0 0; color: var(--muted); font-size: 1.05rem; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+          background: var(--card); border: 1px solid var(--line); font-weight: 600; font-size: .9rem; box-shadow: var(--shadow); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--live); animation: pulse 1.6s infinite; }
+  .pill.rewind .dot { background: var(--accent); animation: none; }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+  .card h2 { margin: 0 0 10px; font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 700; }
+  .pad { padding: 18px; }
+
+  .screen { position: relative; background: #000; aspect-ratio: 4 / 3; }
+  .screen img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .screen svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .screen.editing { cursor: crosshair; }
+  .zone { fill: rgba(255, 200, 0, .12); stroke: #ffc800; stroke-width: 1.5; }
+  .zone-name { fill: #ffe9a8; font: 600 13px sans-serif; paint-order: stroke; stroke: #000; stroke-width: 3px; }
+  .draft { fill: rgba(255, 210, 74, .22); stroke: #ffd24a; stroke-width: 2; stroke-dasharray: 6 4; }
+  .corner { fill: #ffd24a; stroke: #000; stroke-width: 1; }
+  .caption { position: absolute; left: 12px; right: 12px; bottom: 12px; padding: 10px 14px; border-radius: 12px;
+             background: rgba(0,0,0,.72); color: #ffd24a; font-weight: 600; backdrop-filter: blur(6px); }
+  .caption[hidden] { display: none; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center; color: #aaa; text-align: center; padding: 20px; }
+
+  .scrub { padding: 18px; }
+  .scrub-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  .when { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .when small { color: var(--muted); font-weight: 500; font-size: .9rem; margin-left: 8px; }
+  input[type=range] { width: 100%; height: 34px; background: transparent; accent-color: var(--accent); cursor: pointer; }
+  .ends { display: flex; justify-content: space-between; color: var(--muted); font-size: .8rem; }
+  .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+           padding: 8px 14px; font-weight: 600; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  form.ask { display: flex; gap: 8px; }
+  form.ask input { flex: 1; min-width: 0; font: inherit; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--line);
+                   background: var(--bg); color: var(--ink); }
+  button.mic { display: inline-flex; align-items: center; gap: 6px; user-select: none; touch-action: none; }
+  button.mic.on { background: var(--live); border-color: var(--live); color: #fff; animation: pulse 1s infinite; }
+  button.mic[disabled] { opacity: .55; cursor: wait; }
+  .hint { margin: 8px 0 0; font-size: .82rem; color: var(--muted); }
+  .heard { color: var(--muted); font-size: .9rem; margin-bottom: 4px; }
+  .answer { margin-top: 14px; padding: 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); min-height: 3.2em; }
+  .answer.busy { color: var(--muted); }
+  .answer .src { color: var(--muted); font-size: .8rem; margin-top: 6px; }
+  .zone-edit { margin-top: 12px; display: grid; gap: 8px; }
+  .zone-edit[hidden] { display: none; }
+  .zone-edit input { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line);
+                     background: var(--bg); color: var(--ink); }
+  .chip .x { margin-left: 6px; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 5px 12px; border-radius: 999px; font-size: .9rem; }
+  .muted { color: var(--muted); }
+  ul.events { list-style: none; margin: 0; padding: 0; }
+  ul.events li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+  ul.events .where { display: block; color: var(--muted); font-size: .85rem; }
+  ul.events li:first-child { border-top: 0; }
+  ul.events button { padding: 2px 10px; font-size: .85rem; }
+  .kind { font-weight: 700; }
+  .kind.seen { color: #2f9e57; } .kind.left { color: var(--live); } .kind.picked { color: #3b7dd8; } .kind.put { color: #2f9e57; }
+  .stack > * + * { margin-top: 20px; }
+  footer { margin-top: 22px; color: var(--muted); font-size: .85rem; display: flex; gap: 16px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Rewind<span class="arrow">&#8630;</span></h1>
+      <p class="tag">Ctrl+Z for the physical world. Ask where something went, then watch the table rewind.</p>
+    </div>
+    <div class="pill" id="mode"><span class="dot"></span><span id="modeText">LIVE</span></div>
+  </header>
+
+  <div class="grid">
+    <div class="stack">
+      <div class="card">
+        <div class="screen" id="screen">
+          <img id="view" alt="Camera view of the table">
+          <svg id="overlay" viewBox="0 0 640 480" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="caption" id="caption" hidden></div>
+        </div>
+        <div class="scrub">
+          <div class="scrub-top">
+            <div class="when" id="when">Live<small id="ago"></small></div>
+            <div class="muted" id="count"></div>
+          </div>
+          <input type="range" id="slider" min="0" max="0" value="0" step="1" aria-label="Scrub through the table's history">
+          <div class="ends"><span>Start (0m 00s)</span><span>Now</span></div>
+          <div class="btns">
+            <button id="back" title="Left arrow">&#9664; Back</button>
+            <button id="fwd" title="Right arrow">Forward &#9654;</button>
+            <button id="replay" title="R" hidden>&#8634; Replay</button>
+            <button id="live" class="primary" title="L">Back to live</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="card pad">
+        <h2>Ask Rewind</h2>
+        <form class="ask" id="askForm">
+          <input id="q" autocomplete="off" placeholder="Where are my keys?" aria-label="Your question">
+          <button class="primary" type="submit">Ask</button>
+          <button class="mic" id="mic" type="button" aria-label="Hold to talk" title="Hold to talk (or hold the space bar)">&#127908; Talk</button>
+        </form>
+        <p class="hint" id="hint">Just ask out loud, "where are my keys?" Or hold <b>Talk</b> (or the space bar) while you ask.</p>
+        <div class="answer" id="answer">Ask about anything on the table. Rewind answers out loud and replays the moment it was put down.</div>
+      </div>
+
+      <div class="card pad">
+        <h2>On the table now</h2>
+        <div class="chips" id="present"><span class="muted">Nothing yet</span></div>
+      </div>
+
+      <div class="card pad">
+        <h2>What changed</h2>
+        <ul class="events" id="events"><li class="muted">Waiting for the first change&hellip;</li></ul>
+      </div>
+
+      <div class="card pad">
+        <h2>Zones</h2>
+        <div class="chips" id="zoneList"><span class="muted">No zones yet</span></div>
+        <div class="btns"><button id="zoneDraw">Draw a zone</button></div>
+        <div class="zone-edit" id="zoneEdit" hidden>
+          <span class="hint">Click the corners of the area on the live picture (3 or more), then name it.</span>
+          <input id="zoneName" autocomplete="off" maxlength="60" placeholder='Name it, e.g. "on the kitchen table"' aria-label="Zone name">
+          <div class="btns">
+            <button id="zoneUndo">Undo corner</button>
+            <button id="zoneSave" class="primary">Save zone</button>
+            <button id="zoneCancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer><span id="statusMemory"></span><span id="statusMic"></span><span id="statusLive"></span></footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const view = $("view"), slider = $("slider"), overlay = $("overlay");
+let state = { keyframes: [], present: [], events: [], zones: {}, now: Date.now() / 1000, status: {} };
+let pos = 0;              // slider position; equals keyframes.length when LIVE
+let live = true;
+let target = {};          // what the shown moment highlights: {label, box, kind}
+let play = false;         // true = show the moment's rewind gif, false = its still picture
+let nonce = 0;            // bumped to restart a gif from the beginning
+let shown = "";           // what the <img> currently displays, to avoid reloading the same thing
+let settleTimer = null;   // after scrubbing stops, the still turns into the gif
+let lastAnswer = 0, lastKnob = null;
+let editing = false, draft = [];
+let uploading = false;   // a Talk recording is on its way to the server
+
+const n = () => state.keyframes.length;
+const KIND_CLASS = { "put down": "put", "put back": "put", "picked up": "picked", "out of view": "left", "seen": "seen" };
+
+function ago(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 5) return "just now";
+  if (sec < 60) return sec + " seconds ago";
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + " minute" + (m === 1 ? "" : "s") + " ago";
+  const h = Math.floor(m / 60);
+  return h + " hour" + (h === 1 ? "" : "s") + " ago";
+}
+// time since Rewind started, so the history starts at zero every run: "0m 05s", "12m 30s", "1h 05m"
+function since(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? h + "h " + String(m).padStart(2, "0") + "m" : m + "m " + String(s).padStart(2, "0") + "s";
+}
+
+function picture() {
+  const q = [];
+  if (target.label) q.push("hl=" + encodeURIComponent(target.label));
+  if (target.box) q.push("box=" + target.box.join(","));
+  if (play && target.kind) q.push("kind=" + encodeURIComponent(target.kind));
+  if (play) q.push("r=" + nonce);
+  return (play ? "/clip/" + pos + ".gif" : "/frame/" + pos + ".jpg") + (q.length ? "?" + q.join("&") : "");
+}
+
+// The gif takes a moment to make: show the still picture straight away, swap to the gif once it has loaded.
+let pending = null;
+function setPicture(src) {
+  if (src === shown) return;
+  shown = src;
+  if (!src.startsWith("/clip/")) { pending = null; view.src = src; return; }
+  view.src = src.replace("/clip/", "/frame/").replace(".gif", ".jpg");
+  const img = new Image();
+  pending = img;
+  img.onload = () => { if (pending === img && shown === src) view.src = src; };
+  img.src = src;
+}
+
+function show() {
+  const total = n();
+  slider.max = total;
+  if (live) pos = total;
+  pos = Math.min(pos, total);
+  slider.value = pos;
+  slider.disabled = total === 0;
+
+  const isLive = live || pos >= total;
+  setPicture(isLive ? "/stream.mjpg" : picture());
+
+  $("mode").className = "pill" + (isLive ? "" : " rewind");
+  $("modeText").textContent = isLive ? "LIVE" : "REWIND";
+  $("replay").hidden = isLive;
+  overlay.style.display = isLive ? "" : "none";
+  if (isLive) {
+    $("when").firstChild.textContent = "Live";
+    $("ago").textContent = "";
+    $("caption").hidden = true;
+  } else {
+    const k = state.keyframes[pos];
+    $("when").firstChild.textContent = since(k.since);
+    $("ago").textContent = ago(state.now - k.t);
+  }
+  $("count").textContent = total ? (isLive ? total + " moments saved" : "Moment " + (pos + 1) + " of " + total) : "No moments saved yet";
+}
+
+// jump to a moment. opts: {label, box, kind, caption, play}
+function goTo(index, opts) {
+  opts = opts || {};
+  clearTimeout(settleTimer);
+  live = index >= n();
+  pos = index;
+  target = { label: opts.label || "", box: opts.box || null, kind: opts.kind || "" };
+  play = !!opts.play;
+  if (play) nonce++;
+  if (opts.caption) { $("caption").textContent = opts.caption; $("caption").hidden = false; }
+  else $("caption").hidden = true;
+  show();
+}
+
+// scrubbing: the still straight away, then its gif once the slider rests
+function scrubTo(index) {
+  goTo(index, {});
+  if (!live) settleTimer = setTimeout(() => { play = true; nonce++; show(); }, 450);
+}
+
+function jumpTo(j) {
+  if (!j) return;
+  goTo(j.keyframe, { label: j.label, box: j.box, kind: j.kind, caption: j.caption, play: true });
+}
+
+function renderLists() {
+  const present = $("present");
+  present.innerHTML = "";
+  if (!state.present.length) present.innerHTML = '<span class="muted">Nothing yet</span>';
+  state.present.forEach(label => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.textContent = label; b.title = "Where is the " + label + "?";
+    b.onclick = () => ask("Where is the " + label + "?");
+    present.appendChild(b);
+  });
+
+  const ul = $("events");
+  ul.innerHTML = "";
+  const evs = state.events.slice().reverse();
+  if (!evs.length) ul.innerHTML = '<li class="muted">Waiting for the first change&hellip;</li>';
+  evs.forEach(e => {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    const kind = document.createElement("span");
+    kind.className = "kind " + (KIND_CLASS[e.kind] || "");
+    kind.textContent = e.kind;
+    text.append(kind, " · " + e.item + " ");
+    const when = document.createElement("span");
+    when.className = "muted"; when.textContent = ago(state.now - e.t);
+    text.appendChild(when);
+    const where = document.createElement("span");
+    where.className = "where"; where.textContent = e.where || "";
+    text.appendChild(where);
+    li.appendChild(text);
+    if (e.keyframe !== null && e.keyframe !== undefined) {
+      const b = document.createElement("button");
+      b.textContent = "Replay";
+      b.onclick = () => goTo(e.keyframe, { label: e.item, box: e.box, kind: e.kind, play: true,
+                                          caption: e.item + ": " + e.kind + (e.where ? " · " + e.where : "") });
+      li.appendChild(b);
+    }
+    ul.appendChild(li);
+  });
+
+  const zl = $("zoneList");
+  zl.innerHTML = "";
+  const names = Object.keys(state.zones || {});
+  if (!names.length) zl.innerHTML = '<span class="muted">No zones yet. Draw one so answers say "on the kitchen table".</span>';
+  names.forEach(name => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.title = "Delete this zone";
+    b.append(name);
+    const x = document.createElement("span"); x.className = "x"; x.textContent = "×";
+    b.appendChild(x);
+    b.onclick = () => { const z = Object.assign({}, state.zones); delete z[name]; saveZones(z); };
+    zl.appendChild(b);
+  });
+}
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+const toPx = pts => pts.map(p => (p[0] * 640).toFixed(1) + "," + (p[1] * 480).toFixed(1)).join(" ");
+
+function drawOverlay() {
+  overlay.innerHTML = "";
+  for (const [name, pts] of Object.entries(state.zones || {})) {
+    overlay.appendChild(svgEl("polygon", { points: toPx(pts), class: "zone" }));
+    const x = Math.min(...pts.map(p => p[0])) * 640 + 6, y = Math.min(...pts.map(p => p[1])) * 480 + 16;
+    const t = svgEl("text", { x, y, class: "zone-name" }); t.textContent = name;
+    overlay.appendChild(t);
+  }
+  if (editing && draft.length) {
+    overlay.appendChild(svgEl(draft.length > 2 ? "polygon" : "polyline", { points: toPx(draft), class: "draft" }));
+    draft.forEach(p => overlay.appendChild(svgEl("circle", { cx: p[0] * 640, cy: p[1] * 480, r: 5, class: "corner" })));
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state");
+    state = await r.json();
+    const s = state.status;
+    $("statusMemory").textContent = "Gemini " + (s.gemini ? "on" : "off") + " · Voice " + (s.voice ? "on" : "text only");
+    $("statusMic").textContent = "Mic: " + s.mic;
+    $("statusLive").textContent = "Live detection " + s.live_ms + " ms";
+    $("mic").disabled = uploading || (!s.talk && !recorder);
+    $("hint").innerHTML = s.mic === "listening"
+      ? 'Just ask out loud, “where are my keys?” Or hold <b>Talk</b> (or the space bar) while you ask.'
+      : 'Hold <b>Talk</b> (or the space bar), say “where are my keys?”, then let go.';
+    if (state.answer && state.answer.id !== lastAnswer) {
+      lastAnswer = state.answer.id;
+      setAnswer(state.answer.text, state.answer.heard);
+    }
+    renderLists();
+    if (!editing) drawOverlay();
+    if (state.knob !== null && state.knob !== undefined && state.knob !== lastKnob) {
+      lastKnob = state.knob;
+      scrubTo(state.knob);       // the physical rewind knob
+    } else if (state.jump) jumpTo(state.jump);
+    else show();
+  } catch (e) { /* server busy or restarting: try again next tick */ }
+}
+
+async function ask(question) {
+  const box = $("answer");
+  box.className = "answer busy"; box.textContent = "Thinking…";
+  try {
+    const r = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+    const data = await r.json();
+    setAnswer(data.text || data.error || "No answer");
+    if (data.jump) { await poll(); jumpTo(data.jump); }
+  } catch (e) { setAnswer("Could not reach Rewind. Is it still running?"); }
+}
+
+// ---- push to talk: record in the browser, the server turns it into text ----
+const mic = $("mic");
+let recorder = null, chunks = [], micStream = null, startedAt = 0, wantStop = false;
+const talk = on => fetch("/api/talk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }) }).catch(() => {});
+
+function setAnswer(text, heard) {
+  const box = $("answer");
+  box.className = "answer";
+  box.innerHTML = "";
+  if (heard) { const h = document.createElement("div"); h.className = "heard"; h.textContent = "Heard: “" + heard + "”"; box.appendChild(h); }
+  box.append(text);
+}
+
+async function startTalking() {
+  if (recorder || mic.disabled) return;
+  wantStop = false;
+  talk(true);   // the always-on mic waits, so the question isn't answered twice
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    talk(false);
+    setAnswer("I can't use the microphone here. Allow microphone access for this page (the lock icon in the address bar), or type your question.");
+    return;
+  }
+  if (wantStop) { micStream.getTracks().forEach(t => t.stop()); micStream = null; talk(false); return; }  // let go before it was ready
+  const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  recorder = new MediaRecorder(micStream, type ? { mimeType: type } : undefined);
+  chunks = [];
+  recorder.ondataavailable = ev => { if (ev.data.size) chunks.push(ev.data); };
+  recorder.onstop = sendRecording;
+  startedAt = Date.now();
+  recorder.start();
+  mic.classList.add("on");
+  mic.innerHTML = "&#9679; Listening…";
+}
+
+function stopTalking() {
+  wantStop = true;
+  if (recorder && recorder.state === "recording") recorder.stop();
+}
+
+async function sendRecording() {
+  const rec = recorder;
+  recorder = null;
+  micStream.getTracks().forEach(t => t.stop());
+  micStream = null;
+  mic.classList.remove("on");
+  mic.innerHTML = "&#127908; Talk";
+  if (Date.now() - startedAt < 400) { talk(false); setAnswer("That was too short. Hold the button while you speak."); return; }
+  mic.disabled = true; uploading = true;
+  const box = $("answer");
+  box.className = "answer busy"; box.textContent = "Listening…";
+  try {
+    const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+    const r = await fetch("/api/listen", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
+    const data = await r.json();
+    setAnswer(data.text || data.error || "No answer", data.heard);
+    if (data.jump) { await poll(); jumpTo(data.jump); }
+  } catch (e) { setAnswer("Could not reach Rewind. Is it still running?"); }
+  mic.disabled = false; uploading = false;
+}
+
+mic.addEventListener("pointerdown", ev => { ev.preventDefault(); startTalking(); });
+["pointerup", "pointerleave", "pointercancel"].forEach(t => mic.addEventListener(t, stopTalking));
+// Space = hold to talk. The browser's default for Space is "scroll down" (and it repeats while the key is
+// held), so block it on EVERY keydown, not just the first. Typing a space in a text box still works.
+const typing = el => el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && el.type === "text") || (el.tagName === "INPUT" && !el.type);
+document.addEventListener("keydown", ev => {
+  if (ev.code !== "Space" || typing(ev.target)) return;
+  ev.preventDefault();
+  if (!ev.repeat) startTalking();
+});
+document.addEventListener("keyup", ev => {
+  if (ev.code !== "Space" || typing(ev.target)) return;
+  ev.preventDefault();
+  stopTalking();
+});
+
+// ---- zones: drawn right on the live picture ----
+async function saveZones(zones) {
+  try {
+    const r = await fetch("/api/zones", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ zones }) });
+    const data = await r.json();
+    if (data.error) { setAnswer("Couldn't save the zone: " + data.error); return false; }
+    state.zones = data.zones;
+    renderLists(); drawOverlay();
+    return true;
+  } catch (e) { setAnswer("Could not reach Rewind. Is it still running?"); return false; }
+}
+function setEditing(on) {
+  editing = on; draft = [];
+  $("zoneEdit").hidden = !on;
+  $("zoneDraw").hidden = on;
+  $("screen").classList.toggle("editing", on);
+  if (on) { goTo(n(), {}); $("zoneName").value = ""; }
+  drawOverlay();
+}
+$("zoneDraw").onclick = () => setEditing(true);
+$("zoneCancel").onclick = () => setEditing(false);
+$("zoneUndo").onclick = () => { draft.pop(); drawOverlay(); };
+$("zoneSave").onclick = async () => {
+  const name = $("zoneName").value.trim();
+  if (draft.length < 3) { setAnswer("Click at least 3 corners on the live picture first."); return; }
+  if (!name) { $("zoneName").focus(); setAnswer("Give the zone a name, like “on the kitchen table”."); return; }
+  const zones = Object.assign({}, state.zones, { [name]: draft });
+  if (await saveZones(zones)) { setEditing(false); setAnswer("Saved the zone “" + name + "”."); }
+};
+$("screen").addEventListener("click", ev => {
+  if (!editing) return;
+  const r = view.getBoundingClientRect();
+  draft.push([Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))]);
+  drawOverlay();
+});
+
+$("askForm").onsubmit = ev => { ev.preventDefault(); const q = $("q").value.trim(); if (q) { ask(q); $("q").value = ""; } };
+slider.oninput = () => scrubTo(+slider.value);
+$("back").onclick = () => scrubTo(Math.max(0, pos - 1));
+$("fwd").onclick = () => scrubTo(Math.min(n(), pos + 1));
+$("live").onclick = () => goTo(n(), {});
+$("replay").onclick = () => { if (!live) { play = true; nonce++; show(); } };
+document.addEventListener("keydown", ev => {
+  if (typing(ev.target)) return;
+  if (ev.key === "ArrowLeft") $("back").click();
+  else if (ev.key === "ArrowRight") $("fwd").click();
+  else if (ev.key === "l" || ev.key === "L") $("live").click();
+  else if (ev.key === "r" || ev.key === "R") $("replay").click();
+});
+
+poll(); setInterval(poll, 700);
+</script>
+</body>
+</html>

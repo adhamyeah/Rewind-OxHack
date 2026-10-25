@@ -1,64 +1,21 @@
 """
-Rewind - live camera (v7: voice questions, last-seen memory, rewind timeline)
-=============================================================================
+phase1_camera_gate.py - Rewind's eyes: the camera and the fast item detector.
 
-The whole "where did I leave it?" pipeline:
-  zones.py      named areas of the view ("on the kitchen table")     - Stage 3
-  memory.py     put down / picked up / held, and when last seen       - Stage 4
-  listen.py     spoken questions (ElevenLabs speech-to-text)          - Stage 5
-  speak.py      spoken answers (ElevenLabs voice)                     - Stage 5
-  timeline.py   where an item has been + replay of the put-down       - Stage 6
-  describe.py   Gemini: checks put-downs, scans settled scenes,       - Stage 7
-                describes spots, understands odd questions
-Everything is saved in rewind.db (+ snapshots/ and clips/).
+This is the detection from the `detection` branch, unchanged in how it sees:
+  - YOLO-World MEDIUM model at size 640 (finds ~40% more items than small/480 on
+    128 labelled photos), one label per object (agnostic NMS: no "wallet" AND
+    "phone" on one box)
+  - people from their own model (yolo11n, bar 0.5), background crowd ignored
+  - the change gate: the models only re-run when the picture changes (plus a check
+    every 2 s), so the video stays smooth
+  - "settled": once the scene is still for 1.5 s after movement, on_settle fires
+    (memory.py saves a rewind moment and Gemini scans the table)
 
-ASK: just say "where are my glasses?" (or press 1-8 in the video window).
-REWIND: say "show me where my glasses were", or press r after asking.
-Once Gemini confirms a put-down, Rewind says it out loud too ("Got it. Your
-glasses are on the desk...") - turn that off with --quiet.
-
-Setup once: python zone_editor.py (draw zones), and a .env file with
-GEMINI_API_KEY=... and ELEVENLABS_API_KEY=... (the key needs Text to Speech
-and Speech to Text access). Rewind still runs without any of them: no zones
--> "in front of the camera"; no Gemini key -> no checking or scans; no
-ElevenLabs key -> answers are printed and the microphone is off.
-
-Detection (unchanged from v4), measured on 128 labelled photos:
-
-  setup (YOLO-World)              items found   time per run*
-  small model, size 480 (v3)        28 of 99       161 ms
-  small model, size 640             29 of 99       268 ms
-  medium model, size 480            31 of 99       386 ms
-  MEDIUM MODEL, SIZE 640 (v4)       40 of 99       606 ms
-  large model, size 640             38 of 99      1208 ms
-  * on a slow 2-core test machine; your laptop will be faster.
-
-  1. The medium model at size 640 finds ~40% more items. Each detection is
-     slower, but detection runs in the background, so the VIDEO stays smooth.
-     Only the boxes update less often - fine for things on a table.
-  2. People come from a separate small model made for people (yolo11n),
-     with a higher bar (0.5), and far-away people in the background are
-     ignored. Fewer junk person boxes than asking YOLO-World for "person".
-  3. The camera runs at 640x480 like phase1: a narrower view, so items take
-     up more of the picture and fewer background people get in.
-  4. Mac GPU is off by default (it can silently give worse results with
-     YOLO-World); NVIDIA GPUs are used automatically.
-
-Kept from before: smooth threads, live-frame drawing, phase1's change gate
-(the model only re-runs when the scene changes, plus a check every 2 s),
-the appeared / left-view log, and the "(on person)" label.
-
-Run:
-  python phase1_camera_gate.py                     # default webcam
-  python phase1_camera_gate.py --source 1          # second camera (e.g. phone webcam)
-  python phase1_camera_gate.py --source demo.mp4   # a video file
-  python phase1_camera_gate.py --no-gemini         # skip Gemini (offline / save quota)
-  python phase1_camera_gate.py --no-voice          # print answers instead of speaking them
-  python phase1_camera_gate.py --quiet             # speak only when asked, not on every put-down
-  python phase1_camera_gate.py --no-listen         # no microphone (number keys still work)
-  python phase1_camera_gate.py --wake              # noisy room: only answer questions starting with "Rewind"
-  python phase1_camera_gate.py --no-window --seconds 10   # just print numbers
-Keys in the video window: 1-8 ask, r rewind, x close the timeline, q quit.
+rewind.py runs the whole app (web page, memory, voice). To just check the camera
+and the boxes:
+  python phase1_camera_gate.py               # default webcam
+  python phase1_camera_gate.py --source 1    # second camera (e.g. phone webcam)
+Press q to quit.
 """
 
 import argparse
@@ -96,7 +53,7 @@ RECHECK_SECONDS = 2.0      # run the models at least this often, even if nothing
 PASSES_PER_SECOND = 5      # how often the detector looks at a new frame
 SETTLE_SECONDS = 1.5       # still this long after movement = "settled": Gemini scans the whole scene
 
-WINDOW = "Rewind (q to quit)"
+WINDOW = "Rewind camera check (q to quit)"
 
 
 # --------------------------------------------------------------------------
@@ -130,6 +87,17 @@ def load_person_model():
 # --------------------------------------------------------------------------
 # Camera: background reader that only keeps the newest frame
 # --------------------------------------------------------------------------
+def available_cameras(max_index=4):
+    """Camera indexes OpenCV can open right now (only used to write a helpful error message)."""
+    found = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            found.append(i)
+        cap.release()
+    return found
+
+
 class Camera:
     def __init__(self, source, width=CAMERA_W, height=CAMERA_H):
         self.is_file = not str(source).isdigit()
@@ -148,7 +116,15 @@ class Camera:
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # don't queue old frames
 
         if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open camera or video: {source!r}. Try --source 1")
+            self.cap.release()
+            if self.is_file:
+                raise RuntimeError(f"Could not open the video file {source!r}. Check the path.")
+            found = available_cameras()
+            raise RuntimeError(
+                f"Could not open camera {source!r}. "
+                + (f"Cameras that can be opened right now: {found}. Try --source {found[0]}."
+                   if found else "No camera can be opened right now.")
+                + " Phone cameras need the phone unlocked and nearby; also check camera permission for your terminal.")
 
         self.file_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
         self.lock = threading.Lock()
@@ -365,219 +341,54 @@ def label_box(frame, x1, y1, text, colour):
     cv2.putText(frame, text, (x1 + 3, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
 
 
-ASK_LEGEND = ("ask: " + "  ".join(f"{i} {name}" for i, name in enumerate(ITEMS, start=1))
-              + "  |  r rewind  |  or just ask out loud")
-
-
-class Questions:
-    """Answers "where is my X?" from a number key or a spoken question, and can open the rewind timeline."""
-
-    def __init__(self, memory, voice, wake_word=False):
-        self.memory, self.voice, self.wake_word = memory, voice, wake_word
-        self.last_item = None
-        self.rewind_request = None  # an item whose timeline the window should open (set from any thread)
-
-    def ask(self, item, rewind=False):
-        self.last_item = item
-        answer = self.memory.answer(item)
-        self.voice.say(answer)
-        self.memory.note_answer(answer)
-        if rewind:
-            self.rewind_request = item
-
-    def key(self, index):
-        if 0 <= index < len(ITEMS):
-            self.ask(ITEMS[index])
-
-    def rewind(self):
-        """r key: the timeline of the last item asked about, or else the last one put down."""
-        placed = [(s["row"] or 0, name) for name, s in self.memory.items.items() if s["row"]]
-        item = self.last_item or (max(placed)[1] if placed else None)
-        if item:
-            self.rewind_request = item
-        else:
-            self.voice.say("Ask me about something first, then I can rewind it.")
-
-    def heard(self, text):
-        """A transcript from the microphone (background thread)."""
-        import re
-
-        from listen import parse_question
-
-        if self.wake_word and "rewind" not in text.lower():
-            return
-        # "Rewind, where are..." / "Hey Rewind ..." is just calling its name; "rewind my wallet" is a request
-        body = re.sub(r"^\W*((hey|ok|okay)\s+rewind\b\W*|rewind\s*[,.!?:]+\s*)", "", text, flags=re.I)
-        item, question, rewind = parse_question(body, ITEMS)
-        short = len(body.split()) <= 3  # just "glasses?" counts as a question
-        describer = self.memory.describer
-        if not item and (question or rewind) and describer and describer.enabled:
-            item = describer.match_item(body)  # odd phrasing: let Gemini work out the item
-        if item and (question or rewind or short):
-            self.ask(item, rewind)
-        elif question and any(w in body.lower() for w in ("where", "find", "lost")):
-            self.voice.say(f"Sorry, I can only look for your {', '.join(ITEMS[:-1])}, or {ITEMS[-1]}.")
-
-
-def draw(frame, detections, status, zones=None, notes=None, legend=None):
+def draw(frame, detections, status):
+    """Boxes on the live frame: people thin and grey, items in colour, "(on person)" when held or worn."""
     people = [d[:4] for d in detections if d[4] == "person"]
-
-    if zones:
-        from zones import draw_zones
-
-        draw_zones(frame, zones)
-
-    # People first, thin and grey, so items stay the focus.
     for x1, y1, x2, y2 in people:
         cv2.rectangle(frame, (x1, y1), (x2, y2), (160, 160, 160), 1)
         label_box(frame, x1, y1, "person", (160, 160, 160))
-
     for x1, y1, x2, y2, name, conf in detections:
         if name == "person":
             continue
         col = colour_for(name)
-        text = f"{name} {conf:.2f}"
-        thick = 2
-        if held_by_person((x1, y1, x2, y2), people):
-            text += " (on person)"  # held in a hand, or glasses being worn
-            thick = 4
-        cv2.rectangle(frame, (x1, y1), (x2, y2), col, thick)
-        label_box(frame, x1, y1, text, col)
-
+        held = held_by_person((x1, y1, x2, y2), people)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), col, 4 if held else 2)
+        label_box(frame, x1, y1, f"{name} {conf:.2f}" + (" (on person)" if held else ""), col)
     (tw, _), _ = cv2.getTextSize(status, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     cv2.rectangle(frame, (0, 0), (tw + 12, 24), (0, 0, 0), -1)
     cv2.putText(frame, status, (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    if legend:
-        scale = 0.42
-        (lw, _), _ = cv2.getTextSize(legend, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
-        if lw > frame.shape[1] - 12:  # shrink to fit the window width
-            scale *= (frame.shape[1] - 12) / lw
-            (lw, _), _ = cv2.getTextSize(legend, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
-        cv2.rectangle(frame, (0, 24), (lw + 12, 44), (0, 0, 0), -1)
-        cv2.putText(frame, legend, (6, 39), cv2.FONT_HERSHEY_SIMPLEX, scale, (180, 220, 255), 1)
-
-    if notes:  # latest "where is it" lines from memory / Gemini, newest at the bottom
-        import textwrap
-
-        h, w = frame.shape[:2]
-        width = max(30, int(w / 9.5))  # characters that fit across the frame at this font size
-        lines = [part for line in notes for part in textwrap.wrap(line, width)]
-        top = h - 22 * len(lines) - 8
-        cv2.rectangle(frame, (0, top), (w, h), (0, 0, 0), -1)
-        for i, line in enumerate(lines):
-            cv2.putText(frame, line, (8, top + 20 + 22 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 255, 255), 1)
     return frame
 
 
 # --------------------------------------------------------------------------
-# Main
+# Quick camera + detector check (the real app is rewind.py)
 # --------------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Rewind - live camera")
+    ap = argparse.ArgumentParser(description="Rewind camera + detector check (the app itself is rewind.py)")
     ap.add_argument("--source", default="0", help="camera index (0, 1, ...) or a video file path")
-    ap.add_argument("--no-window", action="store_true", help="don't show video, just print numbers")
     ap.add_argument("--seconds", type=float, default=0, help="stop after this many seconds (0 = run until q)")
-    ap.add_argument("--no-gemini", action="store_true", help="don't send snapshots to Gemini")
-    ap.add_argument("--no-voice", action="store_true", help="print answers instead of speaking them")
-    ap.add_argument("--quiet", action="store_true", help="only speak when asked, not on every put-down")
-    ap.add_argument("--no-listen", action="store_true", help="don't use the microphone (number keys still work)")
-    ap.add_argument("--wake", action="store_true", help='only answer spoken questions that start with "Rewind"')
     args = ap.parse_args()
-
-    from listen import Listener          # microphone + ElevenLabs speech-to-text
-    from memory import Memory, plural    # zones + put-down log + Gemini
-    from speak import Voice              # ElevenLabs voice
-    from timeline import WINDOW as TIMELINE_WINDOW, TimelineView
 
     device = pick_device()
     print(f"[rewind] device={device}  imgsz={IMGSZ}  items={MODEL}  people={PERSON_MODEL}")
-    if args.no_voice:
-        voice = type("PrintOnly", (), {"say": staticmethod(lambda text: print(f"[voice] {text}")),
-                                       "busy": staticmethod(lambda: False)})()
-    else:
-        voice = Voice()
-
-    def announce(item, phrase):  # Gemini confirmed a put-down
-        voice.say(f"Got it. Your {item} {'are' if plural(item) else 'is'} {phrase}.")
-
-    memory = Memory(use_gemini=not args.no_gemini, on_confirmed=None if args.quiet else announce, items=ITEMS)
-    questions = Questions(memory, voice, wake_word=args.wake)
-    listener = None if args.no_listen else Listener(questions.heard, is_busy=voice.busy)
-    print(f"[rewind] {ASK_LEGEND}   (keys work in the video window)")
     print("[rewind] loading models (first run downloads them, give it a minute)")
-
-    timeline = [None]  # the open TimelineView, if any
-
-    def on_key(key):
-        """True = quit. Number keys ask where an item is; r opens the rewind timeline; x closes it."""
-        if key in (ord("q"), ord("Q")):
-            return True
-        if ord("1") <= key <= ord("9"):
-            questions.key(key - ord("1"))
-        elif key in (ord("r"), ord("R")):
-            questions.rewind()
-        elif key in (ord("x"), ord("X"), 27) and timeline[0]:
-            timeline[0] = None
-            cv2.destroyWindow(TIMELINE_WINDOW)
-        return False
-
     cam = Camera(args.source)
-    det = Detector(cam, device, on_pass=memory.update, on_settle=memory.settled)
-    cam.start()  # only start reading once the models are ready
-    if listener:
-        listener.start()
-
-    if not args.no_window:
-        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)  # drag the corner to make it bigger
-
-    shown, video_fps = -1, 0.0
-    started = time.perf_counter()
-    last_print = started
-    window_start, window_frames = started, 0  # for measuring video fps
+    det = Detector(cam, device)
+    cam.start()
+    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    shown, started = -1, time.perf_counter()
     try:
-        while True:
+        while not cam.ended:
             frame_id, frame = cam.latest()
-            if frame is None or frame_id == shown:
-                if cam.ended:
-                    break
-                if not args.no_window and on_key(cv2.waitKey(5) & 0xFF):
-                    break
-                time.sleep(0.002)
-            else:
+            if frame is not None and frame_id != shown:
                 shown = frame_id
-                now = time.perf_counter()
-                window_frames += 1
-                if now - window_start >= 1.0:  # NEW pictures shown in the last second
-                    video_fps = window_frames / (now - window_start)
-                    window_start, window_frames = now, 0
-
-                dets = det.latest()
                 state = "still" if det.scene_still else "moving"
-                status = (f"video {video_fps:.0f} fps | items {det.item_ms:.0f} ms | people {det.person_ms:.0f} ms"
+                status = (f"items {det.item_ms:.0f} ms | people {det.person_ms:.0f} ms"
                           f" | diff {det.diff:.1f}/{DIFF_THRESHOLD:.1f} {state}")
-                if args.no_window:
-                    if now - last_print > 1:
-                        seen = ", ".join(f"{d[4]} {d[5]:.2f}" for d in dets) or "-"
-                        print(f"{status} | model runs {det.model_runs}/{det.passes} passes | seen: {seen}")
-                        last_print = now
-                else:
-                    view = draw(frame.copy(), dets, status, memory.zones, memory.recent_notes(), ASK_LEGEND)
-                    cv2.imshow(WINDOW, view)  # always the LIVE frame
-
-                    if questions.rewind_request:  # opened by voice ("show me my glasses") or the r key
-                        timeline[0] = TimelineView(questions.rewind_request, since=memory.started)
-                        questions.rewind_request = None
-                    if timeline[0]:
-                        board = timeline[0].frame()
-                        if board is None:  # timed out
-                            timeline[0] = None
-                            cv2.destroyWindow(TIMELINE_WINDOW)
-                        else:
-                            cv2.imshow(TIMELINE_WINDOW, board)
-
-                    if on_key(cv2.waitKey(1) & 0xFF) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
-                        break
-
+                cv2.imshow(WINDOW, draw(frame.copy(), det.latest(), status))
+            key = cv2.waitKey(5) & 0xFF
+            if key in (ord("q"), ord("Q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                break
             if args.seconds and time.perf_counter() - started > args.seconds:
                 break
     finally:

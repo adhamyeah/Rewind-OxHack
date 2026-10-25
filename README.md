@@ -1,7 +1,10 @@
 # Rewind — OxHack 2026
 
-Ctrl+Z for the physical world. Overhead camera + change-gated detection:
-an object move triggers one detection, logged as appeared/left-view events.
+Ctrl+Z for the physical world. A camera watches the table, remembers where things were put
+down, and answers "where are my keys?" out loud — then replays the moment they were put down.
+
+This branch (`merged`) combines both versions: the detection, memory, Gemini, voice and
+microphone from `detection`, with the web page and rewind slider from `keshav-changes`.
 
 ## Setup
 
@@ -32,61 +35,78 @@ If `Activate.ps1` is blocked by PowerShell's execution policy, run
 `Set-ExecutionPolicy -Scope Process Bypass` first, or use cmd and
 `.venv\Scripts\activate.bat` instead.
 
-### Weights (one time, both platforms, run from repo root)
+Optional extras (Tiger Data copy, the physical rewind knob): `pip install -r requirements-extras.txt`.
 
-YOLO-World does **not** auto-download its weights. Fetch once:
+### Weights
+
+The three `.pt` weights are committed, so `git pull` brings them. If one is missing:
 
 ```bash
 curl -L -o yolov8m-worldv2.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8m-worldv2.pt
 ```
 
-(Windows PowerShell: use `curl.exe`, not `curl`, or `Invoke-WebRequest -Uri <url> -OutFile yolov8m-worldv2.pt`.)
+(Windows PowerShell: use `curl.exe`, not `curl`.) If the CLIP text model download fails with an
+SSL error (some venue Wi-Fi), fetch it with curl:
+
+```bash
+mkdir -p weights/clip
+curl -L -o weights/clip/ViT-B-32.pt https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt
+```
+
+### API keys (once)
+
+Copy `.env.example` to `.env` and fill it in (it's git-ignored; never commit it). The ElevenLabs
+key needs **Text to Speech** and **Speech to Text** access. Then check everything:
+
+```bash
+python doctor.py --network      # packages, keys, camera, microphone, weights, one Gemini + ElevenLabs call
+```
 
 ## Run
 
-**Once: API keys.** Create a file called `.env` in the repo root (it's git-ignored; never commit it):
-
-```
-GEMINI_API_KEY=your-gemini-key
-ELEVENLABS_API_KEY=your-elevenlabs-key
-ELEVENLABS_VOICE_ID=optional-voice-id
-```
-
-The ElevenLabs key needs **Text to Speech** and **Speech to Text** access. Then check each part:
-
 ```bash
-python describe.py              # Gemini: one tiny test call, prints OK or what's wrong
-python speak.py                 # ElevenLabs says a test sentence out loud
-python listen.py                # say "where are my keys?" - prints what it heard
+python rewind.py                # opens http://127.0.0.1:8000 in your browser;  Ctrl+C to quit
+python rewind.py --source 1     # second camera (e.g. a phone webcam)
 ```
 
-**Once per camera position: zones.** Tape the camera down, then draw the areas
-items get left on (name them like "on the kitchen table"):
+On the page:
 
-```bash
-python zone_editor.py           # click corners, Enter to name, q to save
-```
+- **Ask** — just say "where are my glasses?" (the microphone is always listening for questions),
+  hold **Talk** (or the space bar), or type it. Rewind answers out loud and **replays the moment**
+  it was put down (or taken) as a little rewind gif, with the item outlined in yellow.
+- **The slider** steps back through the table's history: one moment each time the scene settles
+  or something is put down or taken. Times count from when Rewind started (`0m 00s`): every run
+  starts fresh. Arrow keys step, **R** replays, **L** goes back to live.
+- **What changed** lists put down / picked up / put back / out of view; **Replay** shows each one.
+- **Zones** — click **Draw a zone**, click the corners of an area on the live picture, name it
+  like "on the kitchen table", save. Answers then say "Your keys are on the kitchen table".
+  (Tape the camera down: zones don't move with it.)
 
-**Every time:**
+Options: `--port 8001` (if 8000 is busy), `--no-browser`, `--no-gemini` (offline / save quota),
+`--no-voice` (print answers), `--quiet` (speak only when asked), `--no-listen` (no always-on mic;
+Talk still works), `--wake` (noisy room: only answer spoken questions that start with "Rewind"),
+`--knob COM3` (physical rewind knob, see `knob/knob.ino`). Questions typed in the terminal work too.
+Only your own computer can open the page (it listens on 127.0.0.1).
 
-```bash
-python phase1_camera_gate.py    # q to quit;  --no-gemini / --no-voice / --no-listen / --quiet / --wake
-```
+`python phase1_camera_gate.py` is a quick camera + detection check without the rest.
 
-Just ask out loud: "where are my glasses?" - or press **1-8** in the video window.
-Say "show me where my glasses were" (or press **r** after asking) for the **rewind timeline**:
-the item's last places plus a replay of the moment it was put down. `python timeline.py glasses`
-opens it on its own. In a noisy room, `--wake` makes Rewind answer only questions that start with "Rewind".
+## Files
 
 | File | What it does |
 | --- | --- |
-| `phase1_camera_gate.py` | Camera + detection (YOLO-World items, yolo11n people). Starts everything. |
-| `zones.py`, `zone_editor.py` | Named areas of the camera view, and the tool to draw them |
-| `memory.py` | Put down / picked up / in your hand, last-seen times, snapshots and clips, in `rewind.db` |
+| `rewind.py` | Starts everything and opens the page |
+| `phase1_camera_gate.py` | Camera + detection: YOLO-World medium at 640 for items, yolo11n for people, change gate, "scene settled" |
+| `memory.py` | Put down / picked up / in your hand / put back, last-seen times, the saved moments and their gifs (`rewind.db`) |
 | `describe.py` | Gemini: checks each put-down, scans the scene when it settles, describes spots, understands odd questions |
-| `listen.py` | Spoken questions: microphone + ElevenLabs speech-to-text |
+| `zones.py` | Named areas of the camera view (`zones.json`); drawn from the page, or with `zone_editor.py` |
+| `answer.py` | Question → item → answer + which moment to replay |
+| `listen.py` | Spoken questions: always-on microphone and the Talk button → ElevenLabs speech-to-text |
 | `speak.py` | Spoken answers: ElevenLabs voice |
-| `timeline.py` | The rewind timeline: history + replay |
+| `web.py`, `static/index.html` | The web page: live view, rewind slider, ask box, events, zones |
+| `ui.py` | Drawing boxes, the rewind gif, notes between threads |
+| `store.py`, `knob.py`, `config.py` | Optional Tiger Data copy, optional knob, keys from `.env` |
+| `doctor.py` | Checks the machine is ready |
+| `tests/` | `pip install -r requirements-dev.txt` then `python -m pytest` |
 
 ## Git workflow (use this loop every time)
 
@@ -95,7 +115,7 @@ git pull                          # grab the other person's changes first
 # ...work...
 git status                        # always check what's staged before committing
 # the venv + __pycache__ + .DS_Store should be ignored here; the .pt weights should NOT be
-# (the weights are committed on purpose so both machines skip the 26 MB download)
+# (the weights are committed on purpose so both machines skip the download)
 git add -A                        # stage everything, dotfiles included
 # never use `git add *` — the shell glob skips dotfiles like .gitignore
 git commit -m "short description of what changed"
