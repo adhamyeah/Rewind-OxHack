@@ -57,6 +57,11 @@ Options: `--port 8001` (if 8000 is busy), `--no-browser`, `--no-gemini` (YOLO on
 `--window` (the old OpenCV window instead of the web page: `,` `.` `l` `q` keys).
 Only your own computer can open the page (it listens on 127.0.0.1).
 
+Tiger Data: with `TIGER_DATABASE_URL` set, every keyframe and event is stored in two hypertables
+(`rewind_keyframes`, `rewind_events`; boxes and labels only, never images) plus a 5-minute continuous
+aggregate. `python show_history.py` prints the demo queries from `queries.sql` (item timeline,
+`time_bucket` activity, how long each item stayed on the table, last known state per item).
+
 Secrets: copy `.env.example` to `.env` and fill it in (never commit `.env`).
 `python doctor.py --network` checks your setup.
 
