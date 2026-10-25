@@ -28,3 +28,8 @@ def test_known_items(text, expected):
 def test_word_boundaries_and_unrelated(text):
     # "open" contains "pen", "penguin" starts with it: neither is the item.
     assert normalise_label(text) is None
+
+
+@pytest.mark.parametrize("text", ["where is my water bottle", "the bottle", "my flask"])
+def test_water_bottle(text):
+    assert normalise_label(text) == "water bottle"

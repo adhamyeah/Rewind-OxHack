@@ -20,7 +20,7 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
 TIGER_DATABASE_URL = os.getenv("TIGER_DATABASE_URL", "")
 
 # --- what to look for (from phase1: works on real glasses) ---
-ITEMS = ["keys", "glasses", "wallet", "phone", "remote control", "mug", "headphones", "pen"]
+ITEMS = ["keys", "glasses", "wallet", "phone", "remote control", "mug", "headphones", "pen", "water bottle"]
 # Other ways people say each item. normalise_label() maps them back to ITEMS.
 SYNONYMS = {
     "keys": ["keys", "key", "car keys", "house keys", "keyring", "key ring"],
@@ -31,6 +31,7 @@ SYNONYMS = {
     "mug": ["mug", "cup", "coffee cup"],
     "headphones": ["headphones", "airpods", "earbuds", "earphones"],
     "pen": ["pen", "pencil"],
+    "water bottle": ["water bottle", "bottle", "flask", "water flask"],
 }
 # Items whose name is plural, so answers say "were" instead of "was".
 PLURAL_ITEMS = {"keys", "glasses", "headphones"}

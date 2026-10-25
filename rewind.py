@@ -97,7 +97,9 @@ def main():
                 continue
 
             if position >= n or position >= len(memory.keyframes):
-                view = ui.draw_detections(live.copy(), det.latest())
+                last = memory.keyframes[-1].detections if memory.keyframes else None
+                boxes = ui.pick_live_boxes(det.latest(), last, det.dirty, worker.busy)
+                view = ui.draw_detections(live.copy(), boxes)
                 mode = "LIVE"
             else:
                 kf = memory.keyframes[position]

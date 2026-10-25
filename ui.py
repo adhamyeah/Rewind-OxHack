@@ -77,3 +77,16 @@ class UIState:
     def clear(self):
         with self.lock:
             self._highlight, self.caption = None, ""
+
+
+def pick_live_boxes(yolo_dets, last_keyframe_dets, scene_changed, memory_busy):
+    """Which boxes the LIVE view draws.
+
+    While things move (or memory is still thinking) we show YOLO's fast live boxes.
+    Once the scene is settled and memory has caught up, we show the memory's boxes
+    (Gemini's labels), so the live view and the answers use the same names.
+    """
+    if last_keyframe_dets is None or scene_changed or memory_busy:
+        return yolo_dets
+    # keep YOLO's grey person boxes; items come from memory
+    return [d for d in yolo_dets if d[4] == "person"] + list(last_keyframe_dets)

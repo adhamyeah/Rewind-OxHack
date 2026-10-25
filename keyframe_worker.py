@@ -32,6 +32,11 @@ class KeyframeWorker:
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
+    @property
+    def busy(self):
+        """True while a keyframe is waiting or being processed (memory is about to change)."""
+        return self.job is not None or self.status != "idle"
+
     def submit(self, frame, dets):
         """Queue a keyframe, replacing any older one still waiting."""
         with self.cond:
