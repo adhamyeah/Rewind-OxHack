@@ -2,5 +2,14 @@
 __pycache__/
 *.pyc
 .DS_Store
+.env
+keyframes/
+answer.wav
+gemini_check/
+recordings/
+*.pt
+!yolov8s-worldv2.pt
+!yolov8m-worldv2.pt
+!yolo11n.pt
 # CLIP text encoder, downloaded automatically on first run (338 MB, over GitHub's 100 MB limit)
 weights/

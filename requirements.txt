@@ -1,2 +1,7 @@
 opencv-python
 ultralytics
+python-dotenv
+google-genai
+elevenlabs
+psycopg[binary]
+pyserial
