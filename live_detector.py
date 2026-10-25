@@ -36,6 +36,24 @@ def gate_image(frame):
     return cv2.GaussianBlur(g, (config.BLUR, config.BLUR), 0)
 
 
+def iou(a, b):
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union else 0.0
+
+
+def one_label_per_object(dets):
+    """Two different labels on (almost) the same box ("wallet" AND "phone") are one object:
+    keep the more confident label. agnostic_nms already does most of this; this catches the rest."""
+    keep = []
+    for d in sorted(dets, key=lambda d: -d[5]):  # strongest first
+        if not any(k[4] != d[4] and iou(k[:4], d[:4]) > config.SAME_OBJECT_IOU for k in keep):
+            keep.append(d)
+    return keep
+
+
 def motion_fraction(prev_gate, gate):
     """Share of pixels (0..1) that changed by more than MOTION_PIXEL_DIFF between two gate images."""
     return float((cv2.absdiff(prev_gate, gate) > config.MOTION_PIXEL_DIFF).mean())
@@ -54,7 +72,7 @@ class LiveDetector:
         from ultralytics import YOLO, YOLOWorld
 
         self.item_model = YOLOWorld(config.MODEL)
-        self.item_model.set_classes(config.ITEMS)
+        self.item_model.set_classes(config.YOLO_ITEMS)
         self.person_model = YOLO(config.PERSON_MODEL) if config.USE_PERSON_MODEL else None
 
         self.lock = threading.Lock()
@@ -93,11 +111,13 @@ class LiveDetector:
         h, w = frame.shape[:2]
         dets = []
         start = time.perf_counter()
-        r = self.item_model.predict(frame, conf=config.CONFIDENCE, imgsz=config.IMGSZ,
-                                    device=self.device, verbose=False)[0]
+        r = self.item_model.predict(frame, conf=config.CONFIDENCE, imgsz=config.IMGSZ, device=self.device,
+                                    agnostic_nms=True,  # one label per object: no "wallet" AND "phone" on one box
+                                    verbose=False)[0]
         self.item_ms = (time.perf_counter() - start) * 1000
-        for (x1, y1, x2, y2), c, k in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist()):
-            dets.append((int(x1), int(y1), int(x2), int(y2), r.names[int(k)], float(c)))
+        items = [(int(x1), int(y1), int(x2), int(y2), r.names[int(k)], float(c))
+                 for (x1, y1, x2, y2), c, k in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist(), r.boxes.cls.tolist())]
+        dets.extend(one_label_per_object(items))
         if self.person_model is not None:
             r = self.person_model.predict(frame, conf=config.PERSON_CONFIDENCE, imgsz=config.IMGSZ,
                                           classes=[0], device=self.device, verbose=False)[0]

@@ -1,6 +1,12 @@
 """
 Gemini as the memory detector: open-vocabulary, so it finds items YOLO-World misses.
 
+Two jobs (both from Adham's detection branch):
+  SCAN   gemini_detect(): one look at the whole settled scene, every item with a box.
+  CHECK  gemini_check():  YOLO saw an item the scan didn't list; Gemini looks at it in an
+         orange box and says YES / NONE (that isn't a pen) / HELD (it's in a hand).
+The keyframe worker blurs people out before either call, so Gemini never sees faces.
+
 Detections come back in the same tuple as everywhere else:
 (x1, y1, x2, y2, label, confidence) in PIXELS. Gemini has no confidence, so we use 1.0.
 """
@@ -16,6 +22,8 @@ import config
 _client = None
 _last_call = 0.0
 
+ORANGE = (0, 140, 255)  # BGR: the box Gemini is told to look inside
+
 
 def normalise_label(text):
     """Map free text ("my specs", "car keys") to one of config.ITEMS, or None."""
@@ -28,6 +36,17 @@ def normalise_label(text):
         if re.search(rf"\b{re.escape(phrase)}s?\b", text):
             return item
     return None
+
+
+def blur_people(img, people):
+    """Blur every person box in `img` (in place). Gemini never sees faces."""
+    h, w = img.shape[:2]
+    for x1, y1, x2, y2 in people:
+        x1, y1 = max(0, int(x1)), max(0, int(y1))
+        x2, y2 = min(w, int(x2)), min(h, int(y2))
+        if x2 > x1 and y2 > y1:
+            img[y1:y2, x1:x2] = cv2.GaussianBlur(img[y1:y2, x1:x2], (31, 31), 0)
+    return img
 
 
 def _get_client():
@@ -52,12 +71,33 @@ def _image_part(jpg_bytes):
     return types.Part.from_bytes(data=jpg_bytes, mime_type="image/jpeg")
 
 
+def _wait_turn():
+    """Free-tier limits: never call in a tight loop."""
+    global _last_call
+    wait = config.GEMINI_MIN_GAP - (time.time() - _last_call)
+    if wait > 0:
+        time.sleep(wait)
+    _last_call = time.time()
+
+
+def _load_json(text):
+    """json.loads that also copes with ```json fences and stray words around the JSON."""
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        pass
+    match = re.search(r"[\[{].*[\]}]", text or "", re.S)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except ValueError:
+        return None
+
+
 def parse_gemini_json(text, width, height):
     """Turn Gemini's JSON reply into pixel detections. Never raises on odd data."""
-    try:
-        data = json.loads(text)
-    except (TypeError, ValueError):
-        return []
+    data = _load_json(text)
     if isinstance(data, dict):  # sometimes wrapped as {"objects": [...]}
         data = next((v for v in data.values() if isinstance(v, list)), [])
     dets = []
@@ -82,26 +122,48 @@ def parse_gemini_json(text, width, height):
 
 
 def gemini_detect(frame, client=None):
-    """Ask Gemini for item boxes in `frame`. Raises on failure (the caller falls back)."""
-    global _last_call
+    """SCAN: ask Gemini for item boxes in `frame` (people already blurred by the caller).
+    Raises on failure (the caller falls back to YOLO)."""
     client = client or _get_client()
     if client is None:
         raise RuntimeError("Gemini is not configured")
-    wait = config.GEMINI_MIN_GAP - (time.time() - _last_call)
-    if wait > 0:
-        time.sleep(wait)  # free-tier limits: never call in a tight loop
-    _last_call = time.time()
-
+    _wait_turn()
     h, w = frame.shape[:2]
     ok, jpg = cv2.imencode(".jpg", frame)
     if not ok:
         raise RuntimeError("could not encode frame")
     reply = client.models.generate_content(
-        model=config.GEMINI_MODEL,
+        model=config.GEMINI_SCAN_MODEL,
         contents=[_image_part(jpg.tobytes()), config.GEMINI_PROMPT],
         config={"response_mime_type": "application/json"},
     )
     return parse_gemini_json(reply.text, w, h)
+
+
+def read_verdict(text):
+    """Gemini's check reply -> "ok", "none", "held", or None if it can't be read."""
+    words = (text or "").strip().split()
+    word = words[0].strip(".,:;-!\"'*").upper() if words else ""
+    return {"YES": "ok", "NONE": "none", "NO": "none", "HELD": "held"}.get(word)
+
+
+def gemini_check(frame, box, item, client=None):
+    """CHECK: is there really a `item` in `box`? `frame` has people blurred already.
+    Returns "ok" / "none" / "held", or None if the reply was unreadable. Raises on API failure."""
+    client = client or _get_client()
+    if client is None:
+        raise RuntimeError("Gemini is not configured")
+    img = frame.copy()
+    cv2.rectangle(img, tuple(int(v) for v in box[:2]), tuple(int(v) for v in box[2:4]), ORANGE, 3)
+    ok, jpg = cv2.imencode(".jpg", img)
+    if not ok:
+        raise RuntimeError("could not encode frame")
+    _wait_turn()
+    reply = client.models.generate_content(
+        model=config.GEMINI_CHECK_MODEL,
+        contents=[_image_part(jpg.tobytes()), config.GEMINI_CHECK_PROMPT.format(item=item)],
+    )
+    return read_verdict(reply.text)
 
 
 def gemini_pick_label(question, client=None):

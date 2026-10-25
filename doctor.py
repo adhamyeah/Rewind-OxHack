@@ -110,7 +110,17 @@ def main():
             import gemini_detector as gd
 
             gd.gemini_detect(np.zeros((240, 320, 3), dtype=np.uint8))
-        check("Gemini call on a blank image", gemini, "check GEMINI_API_KEY and GEMINI_MODEL, or wait if rate-limited")
+        check(f"Gemini scan ({config.GEMINI_SCAN_MODEL}) on a blank image", gemini,
+              "check GEMINI_API_KEY and GEMINI_SCAN_MODEL, or wait if rate-limited")
+
+        def gemini_check():
+            import numpy as np
+
+            import gemini_detector as gd
+
+            gd.gemini_check(np.zeros((240, 320, 3), dtype=np.uint8), (100, 80, 220, 160), "pen")
+        check(f"Gemini check ({config.GEMINI_CHECK_MODEL}) on a blank image", gemini_check,
+              "check GEMINI_API_KEY and GEMINI_CHECK_MODEL, or wait if rate-limited")
 
         def eleven():
             from elevenlabs.client import ElevenLabs
