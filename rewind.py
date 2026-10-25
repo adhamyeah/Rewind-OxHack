@@ -106,7 +106,7 @@ def main():
                 if hl:
                     ui.draw_highlight(view, hl[0], hl[1])
                 mode = f"REWIND {position + 1}/{n}  {time.strftime('%H:%M:%S', time.localtime(kf.time))}"
-            status = f"{mode} | memory: {worker.status} | live {det.item_ms:.0f} ms | keyframes {n}"
+            status = f"{mode} | memory: {worker.status} (last: {worker.last_source}) | live {det.item_ms:.0f} ms | keyframes {n}"
             ui.draw_text_bar(view, status)
             if ui_state.caption:
                 ui.draw_text_bar(view, ui_state.caption, top=False, colour=(0, 255, 255))

@@ -8,6 +8,7 @@ If Gemini fails or is off, we fall back to the live YOLO boxes (people removed).
 
 import os
 import threading
+import time
 
 import cv2
 
@@ -26,6 +27,7 @@ class KeyframeWorker:
         self.job = None              # (frame, yolo_dets) or None
         self.running = True
         self.status = "idle"
+        self.last_source = "-"       # which detector made the last keyframe, and how long it took
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
@@ -54,7 +56,10 @@ class KeyframeWorker:
                     return
                 frame, yolo_dets = self.job
                 self.job = None
+            started = time.perf_counter()
             dets = self._detections_for(frame, yolo_dets)
+            self.last_source = f"{self.status} {time.perf_counter() - started:.1f}s"
+            print(f"[worker] keyframe via {self.last_source}")
             kf, events = self.memory.add_keyframe(dets, image=frame)
             for ev in events:
                 print(f"[memory] {ev.label} {ev.kind}")
