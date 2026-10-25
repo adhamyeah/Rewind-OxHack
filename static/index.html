@@ -21,6 +21,7 @@
   }
   * { box-sizing: border-box; }
   body {
+    overflow-anchor: none;
     margin: 0; background: var(--bg); color: var(--ink);
     font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
@@ -316,10 +317,19 @@ async function sendRecording() {
 
 mic.addEventListener("pointerdown", ev => { ev.preventDefault(); startTalking(); });
 ["pointerup", "pointerleave", "pointercancel"].forEach(t => mic.addEventListener(t, stopTalking));
+// Space = hold to talk. The browser's default for Space is "scroll down" (and it repeats while the key is
+// held), so block it on EVERY keydown, not just the first. Typing a space in the question box still works.
+const typing = el => el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && el.type === "text");
 document.addEventListener("keydown", ev => {
-  if (ev.code === "Space" && !ev.repeat && !(ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON")) { ev.preventDefault(); startTalking(); }
+  if (ev.code !== "Space" || typing(ev.target)) return;
+  ev.preventDefault();
+  if (!ev.repeat) startTalking();
 });
-document.addEventListener("keyup", ev => { if (ev.code === "Space") stopTalking(); });
+document.addEventListener("keyup", ev => {
+  if (ev.code !== "Space" || typing(ev.target)) return;
+  ev.preventDefault();
+  stopTalking();
+});
 
 $("askForm").onsubmit = ev => { ev.preventDefault(); const q = $("q").value.trim(); if (q) { ask(q); $("q").value = ""; } };
 slider.oninput = () => { goTo(+slider.value, "", ""); };
