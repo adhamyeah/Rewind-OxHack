@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rewind</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Where did I leave it?</h1>
+<button id="ask">🎤 Ask Rewind</button>
+<form id="typed" hidden>
+  <label for="q">What are you looking for?</label>
+  <input id="q" autocomplete="off" placeholder="e.g. where are my keys?">
+  <button type="submit">Ask</button>
+</form>
+<div id="answer" aria-live="polite"></div>
+<div id="grid"></div>
+<script src="app.js"></script>
+</body>
+</html>

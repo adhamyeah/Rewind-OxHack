@@ -2,3 +2,14 @@
 __pycache__/
 *.pyc
 .DS_Store
+.pytest_cache/
+
+# secrets
+.env
+
+# made while running
+rewind.db*
+snapshots/
+
+# CLIP text encoder, downloaded automatically on first run (338 MB)
+weights/

@@ -1,74 +1,70 @@
 # Rewind — OxHack 2026
 
-Ctrl+Z for the physical world. Overhead camera + change-gated detection:
-an object move triggers one detection, logged as appeared/left-view events.
+A camera watches the places people put things down, remembers where each item
+settled, and answers "where are my keys?" with a spoken sentence and a photo.
 
-## Setup
-
-One venv per machine, created from the repo directory. Never commit `.venv/`.
-
-### macOS
-
-```bash
-cd rewind-oxhack
-python3 -m venv .venv          # if `python3 --version` < 3.10, use /opt/homebrew/bin/python3.11 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+```
+webcam → main.py (YOLO-World + Claude) → rewind.db → server.py → web page
 ```
 
-### Windows (PowerShell)
+| File | What it does |
+|---|---|
+| `main.py` | Webcam window. Detects items once the scene goes still, logs placed/gone, saves a photo (people blurred), asks Claude where the item is |
+| `db.py` | The shared `events` table (SQLite) |
+| `server.py` | Web server: `/items`, `/where?q=…`, photos, the page |
+| `static/` | The page: one big button, photo tiles, voice in and out |
+| `.env` | Your Anthropic API key (never committed) |
+| `yolov8s-worldv2.pt` | YOLO-World model, committed so nobody has to download it |
+
+## Setup (once)
+
+Windows PowerShell, from this folder:
 
 ```powershell
-cd rewind-oxhack
 py -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # optional but recommended: skips the ~2.5 GB CUDA torch build
-python -m pip install -r requirements.txt
+.venv/Scripts/python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+.venv/Scripts/python -m pip install -r requirements.txt
+copy .env.example .env      # then open .env and paste your key after ANTHROPIC_API_KEY=
 ```
 
-If `Activate.ps1` is blocked by PowerShell's execution policy, run
-`Set-ExecutionPolicy -Scope Process Bypass` first, or use cmd and
-`.venv\Scripts\activate.bat` instead.
+macOS: `python3 -m venv .venv`, then `.venv/bin/python -m pip install -r requirements.txt`.
 
-### Weights (one time, both platforms, run from repo root)
-
-YOLO-World does **not** auto-download its weights. Fetch once:
-
-```bash
-curl -L -o yolov8s-worldv2.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8s-worldv2.pt
-```
-
-(Windows PowerShell: use `curl.exe`, not `curl`, or `Invoke-WebRequest -Uri <url> -OutFile yolov8s-worldv2.pt`.)
+No key? Leave `.env` empty: Rewind still works and says "on the left of the camera view" instead.
 
 ## Run
 
-```bash
-python phase1_camera_gate.py    # Q to quit
+Terminal 1 — the camera (Q in the window to quit):
+
+```powershell
+.venv/Scripts/python main.py
 ```
 
-VSCode: Command Palette -> "Python: Select Interpreter" -> pick the `.venv`
-interpreter at the repo path, then run from the VSCode terminal (it activates
-the venv automatically).
+Terminal 2 — the web page, then open http://localhost:8000 in Chrome:
 
-## Git workflow (use this loop every time)
-
-```bash
-git pull                          # grab the other person's changes first
-# ...work...
-git status                        # always check what's staged before committing
-# the venv + __pycache__ + .DS_Store should be ignored here; the .pt weights should NOT be
-# (the weights are committed on purpose so both machines skip the 26 MB download)
-git add -A                        # stage everything, dotfiles included
-# never use `git add *` — the shell glob skips dotfiles like .gitignore
-git commit -m "short description of what changed"
-git push
+```powershell
+.venv/Scripts/python -m uvicorn server:app --reload
 ```
 
-If `git push` is rejected because the other person pushed first:
+Put an item down and take your hand away. Within a second the terminal prints
+`keys placed …`, then `Claude: keys next to the blue mug`, and the tile appears.
+
+Options: `--source 1` (another camera), `--source clip.mp4` (a video),
+`--items "keys,glasses"` (other names), `--no-window --seconds 20`.
+
+The first run downloads a 338 MB text encoder into `weights/`; wait for it.
+
+## Privacy
+
+Everything runs on the laptop except the Claude description: one still photo per
+placed item, with people blurred, and only when a key is in `.env`.
+Photos are deleted after 24 hours. No video is stored.
+
+## Git
 
 ```bash
-git pull --rebase
+git pull
+git status                  # .env, rewind.db, snapshots/ and weights/ must not appear
+git add -A
+git commit -m "what changed"
 git push
 ```
